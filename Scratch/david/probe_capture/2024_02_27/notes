@@ -1,0 +1,3 @@
+recorded several single_press then long_press events. Sometimes recordings were back to back, and sometimes there was time (and perhaps incidental press events?) in between
+
+Reviewing the data, it looks like the first packet sent after a press has bits that pertain to the previous press, so I now want to collect many-event recordings so I'm certain I'm not missing any data in between
