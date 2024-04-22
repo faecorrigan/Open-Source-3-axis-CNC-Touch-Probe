@@ -1,0 +1,21 @@
+Info : Listening on port 6666 for tcl connections
+Info : Listening on port 4444 for telnet connections
+Info : clock speed 1000 kHz
+Info : STLINK V2J37S7 (API v2) VID:PID 0483:3748
+Info : Target voltage: 3.144078
+Info : [nrf52.cpu] Cortex-M4 r0p1 processor detected
+Info : [nrf52.cpu] target has 6 breakpoints, 4 watchpoints
+Info : starting gdb server for nrf52.cpu on pipe
+Info : accepting 'gdb' connection from pipe
+[nrf52.cpu] halted due to breakpoint, current mode: Thread 
+xPSR: 0x01000000 pc: 0x0000078e msp: 0x20003ef8
+Info : nRF52840-xxAA(build code: D0) 1024kB Flash, 256kB RAM
+[nrf52.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x00000798 msp: 0x20004000
+[nrf52.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x00000798 msp: 0x20004000
+[nrf52.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x000007d8 msp: 0x20004000
+Warn : Adding extra erase range, 0x000008b8 .. 0x00000fff
+Info : halted: PC: 0x000007da
+Info : dropped 'gdb' connection
