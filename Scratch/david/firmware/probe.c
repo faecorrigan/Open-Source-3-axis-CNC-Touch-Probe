@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdbool.h>
 
 // #include "nrf52840.h"
 // #include "core_cm4.h"
@@ -42,6 +43,8 @@
 // 0x40000000 POWER POWER Power control
 // offsets:
 // SYSTEMOFF 0x500 System OFF register -- write 1 to turn system off
+#define POWER_BASE 0x40000000
+#define POWER_OFFSET_SYSTEMOFF 0x500
 
 // Peripherals:
 // There is a direct relationship between peripheral ID and base address. For example, a peripheral with base address 0x40000000 is assigned ID=0, a peripheral with base address 0x40001000 is assigned ID=1, and a peripheral with base address 0x4001F000 is assigned ID=31.
@@ -241,6 +244,7 @@
 #define RTC_OFFSET_EVTEN 0x340
 #define RTC_OFFSET_EVTENSET 0x344
 #define RTC_OFFSET_EVTENCLR 0x348
+#define RTC_OFFSET_COUNTER 0x504
 #define RTC_OFFSET_PRESCALER 0x508
 #define RTC_OFFSET_CC0 0x540
 #define RTC_OFFSET_CC1 0x544
@@ -258,10 +262,11 @@ void  RTC0_IRQHandler() {
   volatile uint32_t foo = MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0);
 }
 
-void BusFault_Handler() {
-	__asm volatile("bkpt 1");
-	while (1) {}
+void bat_broadcast_interrupt();
+void  RTC1_IRQHandler() {
+  bat_broadcast_interrupt();
 }
+
 
 #define RADIO_STATE_DISABLED 0
 #define RADIO_STATE_RXIDLE   2
@@ -476,71 +481,148 @@ void receive_test() {
  *     10.538  +0325us P2_4            ACK  f4 ec  Seq 08
  */
 
-// enum state_t {
-//   STATE_OFF,
-//   STATE_ON_TRIGGERED,
-//   STATE_ON_IDLE,
-//   STATE_ON_PAIRING,
-// };
-// 
-// struct data_t {
-//   state_t state;
-//   uint8_t addr0;
-//   uint8_t addr1;
-//   uint8_t nextSeq;
-//   bool dirty;
-//   bool batSent;
-//   uint32_t txDelay_lfCycles; // units: LF clock cycles = 1/(32.768 kHz)
-// };
+enum state_t {
+  STATE_OFF,
+  STATE_ON_TRIGGERED,
+  STATE_ON_IDLE,
+  STATE_ON_PAIRING,
+};
 
-// void changeState(data_t &data, state_t newState) {
-//   if (newState == STATE_OFF) {
-//     // TODO System OFF
-//     __asm("bkpt 1"); // unreachable; system should be off
-//   }
-// 
-//   // TODO start state timer
-// 
-//   data.state = newState;
-// }
+struct data_t {
+  enum state_t state;
+  uint8_t addr0;
+  uint8_t addr1;
+  uint8_t nextSeq;
+  bool dirty;
+  bool batSent;
+  uint32_t txDelay_lfCycles; // units: LF clock cycles = 1/(32.768 kHz)
+};
+
+const uint32_t RTC_STATE_TIMER_BASE = RTC0_BASE;
+const uint32_t RTC_BAT_BROADCAST_BASE = RTC1_BASE;
+
+void setState(struct data_t *data, enum state_t newState) {
+  // reset state timer
+	MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+
+  // handle turn-off request
+  if (newState == STATE_OFF) {
+    // TODO System OFF
+    __asm("bkpt 1"); // unreachable; system should be off
+  }
+
+  // update state
+  data->state = newState;
+}
+
+void delayMs(uint32_t ms) {
+		for (volatile unsigned long mswait = 0; mswait < ms * (64e6/1e3)/13; mswait++) {}
+}
+
+bool gpioRead(uint32_t pin) {
+  return !!(MMIO(GPIO_BASE, GPIO_OFFSET_IN) & (1<<pin));
+}
+
+volatile bool req_send_bat_broadcast = false;
+
+void bat_broadcast_interrupt() {
+	MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_TASKS_STOP) = 1;
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+
+  req_send_bat_broadcast = true;
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_TASKS_START) = 1;
+}
 
 void _start() {
-//  // TODO init from power off
-//  // - init HF CLOCK
-//  // - init LF CLOCK
-//  // - init radio
-//  // - load pairing info from flash
-//  // - init data
-//
-//  data_t data;
-//  data.state = STATE_ON_TRIGGERED; // TODO check GPIO for this, maybe STATE_ON_IDLE
-//  // TODO init data.{addr0, addr1, next_seq} from flash
-//  data.dirty = false;
-//
-//  while (1) {
-//    switch (data.state) {
-//      case STATE_ON_TRIGGERED:
-//        break;
-//
-//      case STATE_ON_IDLE:
-//        break;
-//
-//      case STATE PAIRING:
-//        break;
-//
-//      case STATE_OFF:
-//        __asm("bkpt 1"); // bad: should be in System Off instead
-//        break;
-//
-//      default:
-//        __asm("bkpt 1"); // bad: invalid state
-//        break;
-//  }
-//
-//	while (1) {
-//		receive_test();
-//	}
-//	while(1);
+  // init HF CLOCK
+	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
+	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1; // enable
+	while (!MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED)) {} // wait for event
+	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
+
+  // init LF CLOCK
+	MMIO(CLOCK_BASE, CLOCK_OFFSET_LFCKSRC) = 0;
+	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_LFCLKSTART) = 1;
+
+	// initialize RTC0 state timer
+	MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_TASKS_STOP) = 1;
+  MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_INTENCLR) = 1<<16;
+  MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_EVTENCLR) = 1<<16;
+	MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+  MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_TASKS_START) = 1;
+  volatile uint32_t *stateTimer = &MMIO(RTC_STATE_TIMER_BASE, RTC_OFFSET_COUNTER);
+
+  // init RTC1 battery broadcast timer
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_INTENSET) = 1<<16;
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_EVTENSET) = 1<<16;
+  volatile uint32_t *nvic_iser = (void *)0xE000E100;
+  *nvic_iser |= 1 << 17; // Enable the RTC1 (External Interrupt 17)
+
+	//MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_CC0) = (uint32_t)(300e6 / RTC_TICK_US);
+	MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_CC0) = (uint32_t)(1e6 / RTC_TICK_US);
+  MMIO(RTC_BAT_BROADCAST_BASE, RTC_OFFSET_TASKS_START) = 1;
+
+  // init radio
+	MMIO(RADIO_BASE, RADIO_OFFSET_CRCCNF) = 0x202; // init crc
+	MMIO(RADIO_BASE, RADIO_OFFSET_CRCPOLY) = 0x11021;
+	MMIO(RADIO_BASE, RADIO_OFFSET_CRCINIT) = 0;
+	MMIO(RADIO_BASE, RADIO_OFFSET_MODE) = 15; // ieee 802.15.4
+	MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
+	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF0) = 8 | (2 << 24) | (1 << 26);
+	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF1) = 127;
+
+  // - load pairing info from flash
+
+  // GPIO init
+  const uint32_t probe_pin = 13;
+  MMIO(GPIO_BASE, GPIO_OFFSET_PIN_CNF0 + 4*probe_pin) = (3 << 2) /*pull up*/ | (3 << 16) /*emit detect event when pin is low*/;
+
+  // Set the interrupt priority to allow interrupts
+  volatile uint32_t *nvic_ipr = (void *)0xE000E400;
+  *nvic_ipr = 0xe0;
+
+  // State machine
+  struct data_t data;
+  setState(&data, STATE_ON_TRIGGERED); // TODO check GPIO for this, maybe STATE_ON_IDLE
+  // TODO init data.{addr0, addr1, next_seq} from flash
+  data.dirty = false;
+
+  while (1) {
+    if (req_send_bat_broadcast) {
+      // send heartbeat battery level broadcast
+      send_test();
+      req_send_bat_broadcast = false;
+    } else if (*stateTimer > 12e6/RTC_TICK_US) {
+      // power off due to inactivity. TODO actually do something different based on state
+      MMIO(POWER_BASE, POWER_OFFSET_SYSTEMOFF) = 1;
+    } else {
+
+      switch (data.state) {
+        case STATE_ON_TRIGGERED:
+          break;
+
+        case STATE_ON_IDLE:
+          break;
+
+        case STATE_ON_PAIRING:
+          break;
+
+        case STATE_OFF:
+          __asm("bkpt 1"); // bad: should be in System Off instead
+          break;
+
+        default:
+          __asm("bkpt 1"); // bad: invalid state
+          break;
+      }
+    }
+  }
+
+	while (1) {
+		receive_test();
+	}
+	while(1);
 
 	while (1) {
 		send_test();
@@ -631,11 +713,11 @@ void _start() {
   // lowest possible for the NRF52. Note the default
   // NVIC priority is zero which would match our current pendsv
   // config so no pre-emption would take place if we didn't change this
-  volatile uint32_t *nvic_ipr = (void *)0xE000E400;
+  //volatile uint32_t *nvic_ipr = (void *)0xE000E400;
   *nvic_ipr = 0xe0;
 
   // Enable the RTC0 (External Interrupt 11)
-  volatile uint32_t *nvic_iser = (void *)0xE000E100;
+  //volatile uint32_t *nvic_iser = (void *)0xE000E100;
   *nvic_iser |= 1 << 11;
 
   __asm volatile("bkpt 3");
