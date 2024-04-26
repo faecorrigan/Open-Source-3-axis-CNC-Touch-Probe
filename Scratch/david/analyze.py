@@ -7,54 +7,11 @@ from functools import reduce
 
 t0 = None
 data = []
-tags_2024_02_27 = {
-    '01410fefec': 'P1_init1',
-    '013e0feaeb': 'P2_init1',
-    '01380fefec': 'P3_init1',
-    '01340fedeb': 'L1_init1',
-    '01340ff1ec': 'L2_init1',
-    '01310feeec': 'L3_init1',
-    '01140fecea': 'L4_init1',
-
-    '063e0fefec': 'P1_init2',
-    '06380feaeb': 'P2_init2',
-    '06310fefec': 'P3_init2',
-    '06310fedeb': 'L1_init2',
-    '06310ff1ec': 'L2_init2',
-    '06140feeec': 'L3_init2',
-    '060b0febea': 'L4_init2',
-
-    '013e0fefec': 'P1_early',
-    '013e0feeec': 'P1_late',
-
-    '01380feaeb': 'P2_early',
-    '01380febeb': 'P2_late',
-
-    '01310fefec': 'P3_early',
-    '01310ff0ec': 'P3_late',
-
-    '01310fedeb': 'L1_early*',
-    '01310feeeb': 'L1_late',
-
-     '01310ff1ec': 'L2_early',
-    #'01310ff0ec': 'L2_late' = P3_late
-    #P3_early also shows up 9 times interspersed in the middle of the many P3_late
-
-    '01140feeec': 'L3_only',
-
-    '010b0fecea': 'L4_early',
-    '010b0febea': 'L4_mid',
-    '010b0feaea': 'L4_late',
-}
-
-tags_2024_02_29 = {
-}
-
-tags = tags_2024_02_29
+tags = {}
 
 # Header notes, for example packet 6188 6122 204c 104c 1001 800e e3c1
 ##############
-# 6188 --> 0x8861 header flags. I have also seen variant 0x8961. The difference is 89 sets the bit for sequence number suppression
+# 6188 --> 0x8861 header flags. I have also seen variant 0x8961. The difference is 89 sets the bit for sequence number suppression. Note: maybe it was actually a bit flip; it doesn't seem normal
 # next byte on the wire (61) is the sequence number. Does not seem to function as a sequence number fwiw
 # next pair of bytes 2220 -> 0x2022 "Destination PAN"
 # next pair of bytes 4c10 -> 0x104c "Destination"
@@ -104,18 +61,17 @@ for fname in sys.argv[1:]:
             line = line[18:]
 
             cmd = line[:2]
-            activation_id = line[2:6]
-            bat = line[6:8]
-            tail = line[8:]
+            cmd_data = line[2:6]
+            crc_metadata = line[6:]
 
             extra = ""
             if cmd == "03":
-                notes.append("BAT {}".format(bat))
+                notes.append("ADR {}".format(cmd_data))
                 notes.append("SEQ {}".format(seq))
             else:
-                extra = "Bat {} Seq {}".format(bat, seq)
+                extra = "Bat {} Seq {}".format(cmd_data, seq)
 
-            line = line[:2] + " " + line[2:6] + " " + line[8:]
+            line = cmd + " " + cmd_data
             line = " ".join([line] + notes)
         elif line.startswith(ack_ok[:13]) and len(line) == len(ack_ok):
             line = line[13:].replace(" ", "")
@@ -184,7 +140,8 @@ print()
 print("new tags:")
 for tag, line in new_tags.items():
     print('\t"{:10}": "{}"'.format(tag, line))
-print()
-print("double tags:")
-for tag, line in double_tags.items():
-    print('\t{:10}: {} ({})'.format(tag, line, tags[line]))
+if len(double_tags):
+    print()
+    print("double tags:")
+    for tag, line in double_tags.items():
+        print('\t{:10}: {} ({})'.format(tag, line, tags[line]))
