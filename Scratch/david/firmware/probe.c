@@ -250,7 +250,59 @@
 #define RTC_OFFSET_CC1 0x544
 #define RTC_TICK_US 30.517
 
+// Flash memory
+// 1024kb, from 0x0 to 0x100000. Code is written to the bottom of that space, so perhaps I'll write data at the top
+// organized into 4kb pages
+// Erase one page at a time, resetting it to all ones
+// Write one word at a time, only clearing bits. Max of 2 writes before erasing and rewriting is required
+// 41us to write a word
+// 85ms to erase a page
+// Registers:
+// Base: 0x4001E000 NVMC NVMC Non-volatile memory controller
+// READY 0x400 Ready flag: 0=ongoing write/erase operation; 1=ready
+// READYNEXT 0x408 Ready flag 0=cannot write now; 1=can enqueue write
+// CONFIG 0x504 Configuration register 0=read only, 1=write enabled 2=erase enabled
+// ERASEPAGE 0x508 Register for erasing a page in code area: write address of first word in the page
+#define NVMC_BASE 0x4001E000
+#define NVMC_READY 0x400
+#define NVMC_READYNEXT 0x408
+#define NVMC_CONFIG 0x504
+#define NVMC_ERASEPAGE 0x508
+
 #define MMIO(base, offset) (*((volatile uint32_t*)(base + offset)))
+
+volatile uint32_t *flashConfig = (uint32_t *)0xffffc;
+
+void eraseFlashPage(uint32_t *addr, bool waitForFinish) {
+	// block on NVMC ready
+	while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+
+	// erase page, referencing the first byte in the page
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 2; //enable flash erasure
+	uint32_t startOfPage = ((uint32_t)addr) & 0xfffff000;
+	MMIO(NVMC_BASE, NVMC_ERASEPAGE) = startOfPage; // erase page
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 0; //disable flash erasure
+
+	if (waitForFinish) {
+		// block on NVMC ready
+		while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+	}
+}
+
+void writeFlash(uint32_t *addr, uint32_t data, bool waitForFinish) {
+	// block on NVMC readynext
+	while (!MMIO(NVMC_BASE, NVMC_READYNEXT)) {}
+
+	// write the word
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 1; //enable flash writing
+	*addr = data;
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 0; //disable flash writing
+
+	if (waitForFinish) {
+		// block on NVMC ready
+		while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+	}
+}
 
 void SystemInit() {
 }
