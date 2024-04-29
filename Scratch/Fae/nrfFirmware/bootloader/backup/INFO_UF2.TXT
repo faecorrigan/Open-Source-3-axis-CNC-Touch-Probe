@@ -1,0 +1,5 @@
+UF2 Bootloader 0.6.1 lib/nrfx (v2.0.0) lib/tinyusb (0.10.1-293-gaf8e5a90) lib/uf2 (remotes/origin/configupdate-9-gadbb8c7)
+Model: Seeed XIAO nRF52840
+Board-ID: Seeed_XIAO_nRF52840_Sense
+SoftDevice: S140 version 7.3.0
+Date: Nov 12 2021

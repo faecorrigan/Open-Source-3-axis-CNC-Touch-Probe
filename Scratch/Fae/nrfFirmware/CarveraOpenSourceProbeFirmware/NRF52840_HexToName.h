@@ -1,3 +1,24 @@
+// Flash memory
+// 1024kb, from 0x0 to 0x100000. Code is written to the bottom of that space, so perhaps I'll write data at the top
+// organized into 4kb pages
+// Erase one page at a time, resetting it to all ones
+// Write one word at a time, only clearing bits. Max of 2 writes before erasing and rewriting is required
+// 41us to write a word
+// 85ms to erase a page
+// Registers:
+// Base: 0x4001E000 NVMC NVMC Non-volatile memory controller
+// READY 0x400 Ready flag: 0=ongoing write/erase operation; 1=ready
+// READYNEXT 0x408 Ready flag 0=cannot write now; 1=can enqueue write
+// CONFIG 0x504 Configuration register 0=read only, 1=write enabled 2=erase enabled
+// ERASEPAGE 0x508 Register for erasing a page in code area: write address of first word in the page
+#define NVMC_BASE 0x4001E000
+#define NVMC_READY 0x400
+#define NVMC_READYNEXT 0x408
+#define NVMC_CONFIG 0x504
+#define NVMC_ERASEPAGE 0x508
+
+
+
 // 0x40000000 CLOCK CLOCK Clock control
 // offsets: write 1 to start tasks
 // TASKS_HFCLKSTART 0x000 Start HFXO crystal oscillator

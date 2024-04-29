@@ -3,6 +3,10 @@
 #include <bluefruit.h>
 
 
+
+//NRF_RADIO->PCNF0=0x02000000;  //4 pre-amble bytes.  S0,LENGTH, and S1 are all zero bits long. potentially extends range on transmitter?
+// NRF_RADIO->PCNF0=0x03000000;  //10 preamble bytes.  S0,LENGTH, and S1 are all zero bits long.
+
 // #include "nrf52840.h"
 // #include "core_cm4.h"
 
@@ -254,16 +258,43 @@
 #define RTC_OFFSET_CC1 0x544
 #define RTC_TICK_US 30.517
 #define RADIO_STATE_TXIDLE 10
-#define PACKET_PROBE {14, 0x61, 0x88, seq++, 0x22, 0x20, 0x4c, 0x10, 0x4c, 0x10, 1, 0xee, 0xee/*0x0d, 0x0b*/}
-#define PACKET_PAIR {14, 0x61, 0x88, seq++, 0x22, 0x20, 0xff, 0xff, 0x4c, 0x10, 3, 0x4c, 0x10/*0x0d, 0x0b*/} //4c 10 is this probes address
+#define PACKET_PROBE {14, 0x61, 0x88, 1, 0x22, 0x20, 0x4c, 0x10, 0x4d, 0x10, 1, 0xee, 0xee/*0x0d, 0x0b*/}
+#define PACKET_PAIR {14, 0x61, 0x88, 1, 0x22, 0x20, 0xff, 0xff, 0x4d, 0x10, 3, 0x4c, 0x10/*0x0d, 0x0b*/} //4c 10 is this probes address
 
 #define MMIO(base, offset) (*((volatile uint32_t*)(base + offset)))
 
-void send_test() {
+
+uint8_t packet[127] = PACKET_PAIR;
+uint8_t seq = 1; // should probably sort this out at some point
+
+uint8_t pan[2] = {0x22,0x20};
+uint8_t destination[2] = {0xea,0x0b};
+uint8_t source[2] = {0xea,0x0b};
+
+//pairing wait
+unsigned long previousMillis = 0;  // will store last time LED was updated
+unsigned long currentMillis;
+// constants won't change:
+const long interval = 50;  // interval at which to blink (milliseconds)
+
+
+
+void set_channel() {
+  //to make this accessable in other areas, need to turn off radio, change channel, and then turn on radio
+  //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 0;
+  //while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_DISABLED){}
+  
+  MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = channel*5-50; // 2475MHz = channel 25 page 321 of nRF52840_PS_v1.8
+  //MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
+  //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 0;
+
+
+}
+
+void enable_radio(){
 	// radio power on
 	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
-  Serial.println(MMIO(RADIO_BASE, RADIO_OFFSET_POWER));
-  MMIO(RADIO_BASE, RADIO_OFFSET_TXPOWER) = 8; //set radio power to max
+  MMIO(RADIO_BASE, RADIO_OFFSET_TXPOWER) = 2; //set radio power to 1-8
 	// hf clock on
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1; // enable
@@ -282,20 +313,90 @@ void send_test() {
 
 	//MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x052D0000 | 2; // default thresholds; require energy level and carrier pattern to detect busy
 	MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x022D2D00; // default thresholds; require energy level and carrier pattern to detect busy
+  
+  
 
+  set_channel(channel);
+  //MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = channel*5-50; // 2475MHz = channel 25 page 321 of nRF52840_PS_v1.8
+  //set_channel(channel);
+  //Serial.println(MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY));
 	MMIO(RADIO_BASE, RADIO_OFFSET_MODE) = 15; // ieee 802.15.4
-	MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
+	
 	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF0) = 8 | (2 << 24) | (1 << 26);
 	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF1) = 127;
 	// MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
 
+}
+
+
+//{14, 0x61, 0x88, seq++, 0x22, 0x20, 0xff, 0xff, 0x4c, 0x10, 3, 0x4c, 0x10}
+//{14, 0x61,0x88,seq++, PANB,PANA, destAddrB,destAddrA,srcAddB,SrcAddA,dataA,batB,BatA}
+//dataA: 0 probe not hit, 1 probe hit, 3 pairing, 
+void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batteryA = 0x10, bool reset_seq = false)
+{
+  if (reset_seq){
+    seq = 0x00;
+  }
+  //packet lenght
+  packet[0]=14;  
+  //source addressing mode
+  packet[1] = 0x61;
+  packet[2] = 0x88;
+  //sequence number
+  packet[3] = seq++;
+  //pan
+  packet[4] = pan[0];
+  packet[5] = pan[1];
+  //destination
+  packet[6] = destination[0];
+  packet[7] = destination[1];
+  //source
+  packet[8] = source[0];
+  packet[9] = source[1];
+  //data payload
+  if (status == 3){
+    packet[10] = status;
+    //destination
+    packet[6] = 0xff;
+    packet[7] = 0xff;
+  }
+  else{
+    packet[10] = status;
+  }
+  //battery status
+  packet[11] = batteryB;
+  packet[12] = batteryA;
+
+
+}
+
+
+void send_packet(uint8_t pkt[127]) {
+
+
 	// block waiting for a stable radio state
 	uint32_t state = -1;
 
+
+	// if the state is not rx idle, perform rx ramp up and wait
+	if (state == RADIO_STATE_RXIDLE) {
+		MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+	}
+	state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
+	if (state != RADIO_STATE_TXIDLE) { 
+		MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 0;
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
+	}
+	while (state != RADIO_STATE_TXIDLE) {
+		state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
+    Serial.print("capture2");
+	}
+
+
 	// Send packet
 	volatile uint32_t *radio_state = &MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-	uint8_t seq = 1;
-	uint8_t pkt[127] = PACKET_PAIR;
+	
+	//uint8_t pkt[127] = datapacket;
 	MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&pkt[0];
 	//MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = (0
 	//		//| 1 << 1  /*end -> disable */
@@ -313,7 +414,7 @@ void send_test() {
 	uint32_t states[30] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 	int i = 0;
 	states[i++] = last_state;
-	//MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
+
 	MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
 	MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
 	
@@ -328,45 +429,25 @@ void send_test() {
     }
   }
   for (int k = 0; k <30; k++){
-    Serial.print(states[k]);
-    Serial.print(" ");
+    //Serial.print(states[k]);
+    //Serial.print(" ");
 
   }
-  Serial.println(MMIO(RADIO_BASE,RADIO_OFFSET_TASKS_TXEN));
+  //Serial.println(MMIO(RADIO_BASE,RADIO_OFFSET_TASKS_TXEN));
 }
 
-void receive_test() {
-	// radio power on
-	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
-
-	// hf clock on
-	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
-	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1; // enable
-	while (!MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED)) {} // wait for event
-	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
-
-	// misc radio configuration
-	MMIO(RADIO_BASE, RADIO_OFFSET_CRCCNF) = 0x202;
-	MMIO(RADIO_BASE, RADIO_OFFSET_CRCPOLY) = 0x11021;
-	MMIO(RADIO_BASE, RADIO_OFFSET_CRCINIT) = 0;
-
-	//MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x052D0000 | 2; // default thresholds; require energy level and carrier pattern to detect busy
-	MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x022D2D00; // default thresholds; require energy level and carrier pattern to detect busy
-
-	MMIO(RADIO_BASE, RADIO_OFFSET_MODE) = 15; // ieee 802.15.4
-	MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
-	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF0) = 8 | (2 << 24)| (1 << 26);
-	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF1) = 127;
-	// MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
+int receive_test() {
 
 	// block waiting for a stable radio state
 	uint32_t state = -1;
 	while (state != RADIO_STATE_DISABLED && state != RADIO_STATE_RXIDLE && state != RADIO_STATE_TXIDLE && state != RADIO_STATE_RX) {
-		state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
+		Serial.print("capture A");
+  state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
 	}
 
 	// if the state is not rx idle, perform rx ramp up and wait
 	if (state == RADIO_STATE_RX) {
+    Serial.print("capture B");
 		MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
 	}
 	state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
@@ -374,6 +455,7 @@ void receive_test() {
 		MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
 	}
 	while (state != RADIO_STATE_RXIDLE) {
+    Serial.print("capture C");
 		state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
 	}
 
@@ -396,10 +478,16 @@ void receive_test() {
 	//MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
 	//MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
 	MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
-
+  previousMillis = millis();
   while(MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) == 0) { //wait until it recieves something
+    currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) { //escape loop if taking too long
+      Serial.print("n");
+      return 0;
+    }
+    
   }
-  Serial.print(MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK));
+  Serial.println(MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK));
   
   for (int j = 0; j<pkt[0]; j++){
     Serial.print(" ");
@@ -407,10 +495,11 @@ void receive_test() {
   }
   Serial.println();
   
-  /*
+  
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) { //check for CRC ok?
     if (pkt[0]==0xe && pkt[4]==0x22 && pkt[5]==0x20) {
       // length, PAN ok
+      Serial.print(" length pan ok ");
       volatile uint8_t cmd = pkt[10];
       if (cmd == 1 || cmd == 6) {
         volatile uint16_t bat_raw = pkt[11] + (((uint16_t)pkt[12]) << 8);
@@ -425,8 +514,9 @@ void receive_test() {
     }
     
   }
-  */
+  
 	//while(1) {}
+  return 1;
 }
 
 
@@ -437,20 +527,46 @@ void setup(){
   Serial.println("nRF52840 Carvera Wireless Probe Core Features Example");
   Serial.println("--------------------------------\n");
   pinMode(LED_RED, OUTPUT);
-  send_test();
+  pinMode(2,INPUT_PULLUP);
+  pinMode(3,INPUT_PULLUP);
+
+
+  enable_radio(25);
+  
+  uint8_t packet_out[127] = PACKET_PROBE;
+
 
 }
 
 void loop(){
-
-
+  uint8_t packet_out[127] = PACKET_PAIR;
+  bool pair = false;
+  if (pair)//!digitalRead(2))
+  {
+    //digitalWrite(LED_RED, LOW);
+    //enable_radio(25);
+    build_packet(0x03, 0xea, 0x0b);
+    //send_packet(packet);
+    //receive_test();
+    delay(200);
+    
+  }else if (!pair){
+    //digitalWrite(LED_RED, LOW);
+    Serial.print("send");
+    enable_radio(25);
+    build_packet(0x01, 0x99, 0x11);
+    send_packet(packet);
+    //receive_test();
+    delay(6);
+  }
   
-  //digitalWrite(LED_RED, LOW);
-  //send_test();
+
+  //send_packet();
   //delay(5);
   //digitalWrite(LED_RED, HIGH);
-  //send_test();
+  //send_packet();
   //delay(5);
+
 
 
 }

@@ -1,14 +1,26 @@
-/*
-  
-*/
+/*********************************************************************
+ This is an example for our nRF52 based Bluefruit LE modules
+
+ Pick one up today in the adafruit shop!
+
+ Adafruit invests time and resources providing this open source code,
+ please support Adafruit and open-source hardware by purchasing
+ products from Adafruit!
+
+ MIT license, check LICENSE for more information
+ All text above, and the splash screen below must be included in
+ any redistribution
+*********************************************************************/
+
 #include "NRF52840_HexToName.h"
 #include <Arduino.h>
-//#include <Adafruit_LittleFS.h>
-//#include <InternalFileSystem.h>
 #include <bluefruit.h>
 
 
-//using namespace Adafruit_LittleFS_Namespace;
+#define StartBootMode//uncomment to start in bootmode
+//#define ConstantPair//uncomment to start and stay in pair mode. Overwritten by StartBootMode
+
+
 
 #define PIN_VBAT        (32)  // D32 battery voltage
 #define PIN_VBAT_ENABLE (14)  // D14 LOW:read anable
@@ -18,37 +30,44 @@
 #define PIN_WAKEUP      2
 #define PIN_BOOTJUMPER  23
 #define PIN_OTHERJUMPER 1
-//#define StartBootMode //uncomment to start in bootmode
+#define BATTERYPOWERCONVERSIONRATIO 1000*0.1856 * 3.6
+
 
 enum ProbeMode { UNDEF, INIT, IDLE, SLEEP, PAIR, PROBE, LASER, UPDATE, TEST}; //laser mode is wrapped inside pairing mode. 
 enum RadioMode  {OFF,SEND,RECIEVE};
 
-ProbeMode probe_mode_c = PROBE;
-bool uninitialized = true;
-//button configuration variables
-int polling_rate = 100; //ms between tests
-unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
-unsigned long buttonLongPressLength = 10000; //how long you need to hold the button down before it enters pairing mode
-unsigned long buttonDoublePressTime = 500; //how long between button presses to register a double press
-unsigned long buttonHeartbeatUnpressed = 1000; //how long between sending button released events in active probe mode
+ProbeMode probe_mode_c = PROBE;//PROBE; //set to test and modify testCycle() for dev work
 
-//mode duration setup
-unsigned long pairingDelay = 15000; //how long to wait in pairing mode before quitting back to probe mode
-unsigned long laserDelay = 15000; //how long to wait in laser mode before quitting back to probe mode
-unsigned long idle_Delay = 20000; //how long to wait until the probe goes into idle mode
-unsigned long sleeping_delay = 100000000;//1000000; //how long until the probe goes into a deep sleep mode
-unsigned long idle_heartbeat_delay = 5000;//how often to send heartbeat probe updates when in idle mode 
+struct configurationVariablesStruct 
+{
+  ////////////////////////////configuration variables///////////////////////////////////////////////
+  bool uninitialized = true;
+  //button configuration variables
+  int pollingRate = 100; //ms between tests
+  unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+  unsigned long buttonLongPressLength = 10000; //how long you need to hold the button down before it enters pairing mode
+  unsigned long buttonDoublePressTime = 500; //how long between button presses to register a double press
+  unsigned long buttonHeartbeatUnpressed = 1000; //how long between sending button released events in active probe mode
 
-//communication configuration
-uint8_t pan[2] = {0x22,0x20};
-uint8_t destination[2] = {0xea,0x0b};
-uint8_t source[2] = {0xea,0x0b};
-const long ack_interval = 200;  // how long to wait for ACK packets
-int channel = 25;
-int channel_rx = 25;
+  //mode duration setup
+  unsigned long pairingDelay = 15000; //how long to wait in pairing mode before quitting back to probe mode
+  unsigned long laserDelay = 15000; //how long to wait in laser mode before quitting back to probe mode
+  unsigned long idleDelay = 20000; //how long to wait until the probe goes into idle mode
+  unsigned long sleepingDelay = 100000000;//1000000; //how long until the probe goes into a deep sleep mode
+  unsigned long idleHeartbeatDelay = 5000;//how often to send heartbeat probe updates when in idle mode 
 
+  //communication configuration
+  uint8_t pan[2] = {0x22,0x20};
+  uint8_t destination[2] = {0xea,0x0b};
+  uint8_t source[2] = {0xea,0x0b};
+  long ackInterval = 200;  // how long to wait for ACK packets
+  int channel = 25;
+  int channelRx = 25;
+};
+configurationVariablesStruct configurationVariables;
 
-//////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////setup variables////////////////////////////////////////////////////////////
+
 
 //communication setup
 uint8_t packet[127] = PACKET_PAIR;
@@ -80,6 +99,162 @@ bool laserOn = false;
 //batttery setup variables
 int16_t vbatt = 0;
 
+
+//flash storage setup
+volatile uint32_t *flashConfig = (uint32_t *)0xfef00; //rename to flash page the second hex digit is the page number
+
+//bluetooth BLE uarrt setup
+BLEDfu  bledfu;  // OTA DFU service
+BLEDis  bledis;  // device information
+BLEUart bleuart; // uart over ble
+BLEBas  blebas;  // battery
+
+const byte blueart_numChars = 32;
+char blueart_receivedChars[blueart_numChars];
+char blueart_tempChars[blueart_numChars];        // temporary array for use when parsing
+
+// variables to hold the parsed data
+char blueart_returnCommand[blueart_numChars] = {0};
+char blueart_returnVariable[blueart_numChars] = {0};
+char blueart_returnValue[blueart_numChars] = {0};
+uint8_t blueart_output_buf[64];
+
+boolean blueart_newData = false;
+
+
+//////////////////////config storage///////////////////////////////////
+
+void eraseFlashPage(volatile uint32_t *addr, bool waitForFinish) 
+{
+	// block on NVMC ready
+  //err_code = 
+  //sd_flash_page_erase(*addr);
+  //Serial.println(err_code);
+  
+	while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+
+	// erase page, referencing the first byte in the page
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 2; //enable flash erasure
+
+	uint32_t startOfPage = ((uint32_t)addr) & 0xfffff000;
+	MMIO(NVMC_BASE, NVMC_ERASEPAGE) = startOfPage; // erase page
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 0; //disable flash erasure
+
+	if (waitForFinish) {
+		// block on NVMC ready
+		while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+	}
+  
+}
+
+void writeFlash(volatile uint32_t *addr, uint32_t data, bool waitForFinish) 
+{
+	// block on NVMC readynext
+	while (!MMIO(NVMC_BASE, NVMC_READYNEXT)) {}
+
+	// write the word
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 1; //enable flash writing
+	*addr = data;
+	MMIO(NVMC_BASE, NVMC_CONFIG) = 0; //disable flash writing
+
+	if (waitForFinish) {
+		// block on NVMC ready
+		while (!MMIO(NVMC_BASE, NVMC_READY)) {}
+	}
+}
+
+void report_flash_vars_to_serial() //for testing.
+{
+  for (int cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
+  //for (int cnt= 0; cnt < 4096; cnt++)
+  {
+    Serial.println(*(flashConfig + cnt) );
+
+  }
+  
+}
+
+void write_default_flash_vars()
+{
+  //writeFlash(&flashConfig[0], configurationVariables, true); //todo
+}
+
+void write_current_flash_vars()
+{
+  Serial.println("vars at start: ");
+  report_flash_vars_to_serial();
+
+  
+  eraseFlashPage(flashConfig,true);
+
+  Serial.println("vars being written: ");
+
+  // pointer to array of 16 bit values
+  uint32_t *p;
+  // take address of configurationVariables and assign to the pointer
+  p = (uint32_t*)&configurationVariables;
+
+  // loop thorugh the elements of the struct
+  for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
+  {
+    //writeFlash(&flashConfig[cnt], *(p++), true);
+    // p points to an address of an element in the array; *p gets you the value ofthat address
+    // print it and next point the pointer to the address of the next element
+    writeFlash((flashConfig + cnt),*(p),true );
+    Serial.println(*(p));
+    p++;
+    
+  }
+
+  Serial.println("vars at end: ");
+
+  report_flash_vars_to_serial();
+}
+
+void read_current_flash_vars()
+{
+  if (*(flashConfig) > 2 ){
+    bleuart.print("cannot read from flash");
+    bleuart.print(*(flashConfig),HEX);
+    return;
+  }
+  uint32_t *p;
+  // take address of configurationVariables and assign to the pointer
+  p = (uint32_t*)&configurationVariables;
+
+  // loop thorugh the elements of the struct
+  for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
+  {
+    //writeFlash(&flashConfig[cnt], *(p++), true);
+    // p points to an address of an element in the array; *p gets you the value ofthat address
+    // print it and next point the pointer to the address of the next element
+    
+    *p = *(flashConfig + cnt);
+    Serial.println(*(p));
+    p++;
+  }
+}
+
+void report_current_flash_vars_bleuart()
+{
+  //uint32_t *p;
+  // take address of configurationVariables and assign to the pointer
+  //p = (uint32_t*)&configurationVariables;
+
+  // loop thorugh the elements of the struct
+  for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
+  {
+    //writeFlash(&flashConfig[cnt], *(p++), true);
+    // p points to an address of an element in the array; *p gets you the value ofthat address
+    // print it and next point the pointer to the address of the next element
+    bleuart.print(*(flashConfig + cnt));
+    //p++;
+  }
+}
+
+///////////////////////radio//////////////////////////////////////////
+
+
 void disable_radio(){
   
   //NRF_RADIO->SHORTS = 0;
@@ -92,6 +267,8 @@ void disable_radio(){
       // Do nothing.
   }
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
+
+
 }
 
 void set_radio_mode(RadioMode radio_mode)
@@ -106,7 +283,7 @@ void set_radio_mode(RadioMode radio_mode)
     break;
 
     case SEND:
-      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = channel*5-50;
+      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel*5-50;
       MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
       while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
@@ -116,10 +293,10 @@ void set_radio_mode(RadioMode radio_mode)
       break;
 
     case RECIEVE: 
-      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = channel_rx*5-50;
-      MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
+      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channelRx*5-50;
+      //MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
+      //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
+      //while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
       setup_radio_TXRX();
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
       while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_READY) == 0) {} // wait to complete
@@ -135,7 +312,7 @@ void set_channel() //needs to shut down and restart the radio between changing c
   //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 0;
   //while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_DISABLED){}
   
-  MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = channel*5-50; // 2475MHz = channel 25 page 321 of nRF52840_PS_v1.8
+  MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel*5-50; // 2475MHz = channel 25 page 321 of nRF52840_PS_v1.8
   //MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
   //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 0;
 
@@ -185,14 +362,14 @@ void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batter
   //sequence number
   packet[3] = seq++;
   //pan
-  packet[4] = pan[0];
-  packet[5] = pan[1];
+  packet[4] = configurationVariables.pan[0];
+  packet[5] = configurationVariables.pan[1];
   //destination
-  packet[6] = destination[0];
-  packet[7] = destination[1];
+  packet[6] = configurationVariables.destination[0];
+  packet[7] = configurationVariables.destination[1];
   //source
-  packet[8] = source[0];
-  packet[9] = source[1];
+  packet[8] = configurationVariables.source[0];
+  packet[9] = configurationVariables.source[1];
   //data payload
   if (status == 3){
     packet[10] = status;
@@ -259,7 +436,8 @@ void send_packet(uint8_t pkt[127]) {
 
 }
 
-void send_ack(){
+void send_ack()
+{
   	// block waiting for a stable radio state
 	uint32_t state = -1;
 
@@ -307,7 +485,8 @@ void send_ack(){
  
 }
 
-int receive_test() { //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
+int recieve_packet() 
+{ //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
 	// radio power on
 	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
 
@@ -326,7 +505,6 @@ int receive_test() { //return 0 for no packet, return 1 for a proper packet, ret
 	MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x022D2D00; // default thresholds; require energy level and carrier pattern to detect busy
 
 	MMIO(RADIO_BASE, RADIO_OFFSET_MODE) = 15; // ieee 802.15.4
-	MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = 75; // 2475MHz = channel 25
 	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF0) = 8 | (2 << 24)| (1 << 26);
 	MMIO(RADIO_BASE, RADIO_OFFSET_PCNF1) = 127;
 	// MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
@@ -373,7 +551,7 @@ int receive_test() { //return 0 for no packet, return 1 for a proper packet, ret
   previousMillis = millis();
   while(MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) == 0) { //wait until it recieves something
     currentMillis = millis();
-    if (currentMillis - previousMillis >= ack_interval) { //escape loop if taking too long
+    if (currentMillis - previousMillis >= configurationVariables.ackInterval) { //escape loop if taking too long
       return 0;
     }
     
@@ -400,140 +578,595 @@ int receive_test() { //return 0 for no packet, return 1 for a proper packet, ret
       
       if (pkt[10] == 0x03){
         Serial.println(" confirm packet ");
-        source[0] = pkt[11];
-        source[1] = pkt[12];
-        destination[0] = pkt[11];
-        destination[1] = pkt[12];
+        configurationVariables.source[0] = pkt[11];
+        configurationVariables.source[1] = pkt[12];
+        configurationVariables.destination[0] = pkt[11];
+        configurationVariables.destination[1] = pkt[12];
         return 1;
       } 
     }
     
   }
-
+  /* print any other packets that the device recieves
   for (int j = 0; j<pkt[0]; j++){
     ack_pkt[j] = pkt[j];
     Serial.print(" ");
     Serial.print(ack_pkt[j]);
   }
   Serial.println();
-  
+  */
 	//while(1) {}
   return 0;
 }
 
-/*
-void gotoSleep(unsigned long time) // depreciated
+///////////////////////blueart/////////////////////////
+void setup_blueart()
 {
-  // shutdown when time reaches SLEEPING_DELAY ms
-  if ((time>sleeping_delay + lastDebounceTime))
-  {
-    // to reduce power consumption when sleeping, turn off all your LEDs (and other power hungry devices)
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, HIGH);  
-    digitalWrite(LED_BLUE, HIGH);                       
+  disable_radio();
+  // Setup the BLE LED to be enabled on CONNECT
+  // Note: This is actually the default behavior, but provided
+  // here in case you want to control this LED manually via PIN 19
+  Bluefruit.autoConnLed(true);
 
-    // setup your wake-up pins.
-    pinMode(PIN_WAKEUP,  INPUT_PULLUP_SENSE);    // this pin (WAKE_LOW_PIN) is pulled up and wakes up the feather when externally connected to ground.
-    //pinMode(WAKE_HIGH_PIN, INPUT_PULLDOWN_SENSE);  // this pin (WAKE_HIGH_PIN) is pulled down and wakes up the feather when externally connected to 3.3v.
+  // Config the peripheral connection with maximum bandwidth 
+  // more SRAM required by SoftDevice
+  // Note: All config***() function must be called before begin()
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+
+  Bluefruit.begin();
+  Bluefruit.setTxPower(4);    // Check bluefruit.h for supported values
+  //Bluefruit.setName(getMcuUniqueID()); // useful testing with multiple central connections
+  Bluefruit.Periph.setConnectCallback(connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+
+  // To be consistent OTA DFU should be added first if it exists
+  bledfu.begin();
+
+  // Configure and Start Device Information Service
+  bledis.setManufacturer("PMP");
+  bledis.setModel("Carvera Open Source Touch Probe");
+  Bluefruit.setName("PMP Open Source 3 Axis Probe v1");
+  bledis.begin();
+
+  // Configure and Start BLE Uart Service
+  bleuart.begin();
+
+  // Start BLE Battery Service
+  blebas.begin();
+
+  vbatt = analogRead(PIN_VBAT);
+  vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;
+  blebas.write(vbatt/40);
+
+
+  // Set up and start advertising
+  startAdv();
+
+  Serial.println("Please use Adafruit's Bluefruit LE app to connect in UART mode");
+  Serial.println("Once connected, enter character(s) that you wish to send");
+}
+
+
+void startAdv(void)
+{
+  // Advertising packet
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+
+  // Include bleuart 128-bit uuid
+  Bluefruit.Advertising.addService(bleuart);
+
+  // Secondary Scan Response packet (optional)
+  // Since there is no room for 'Name' in Advertising packet
+  Bluefruit.ScanResponse.addName();
+  
+  /* Start Advertising
+   * - Enable auto advertising if disconnected
+   * - Interval:  fast mode = 20 ms, slow mode = 152.5 ms
+   * - Timeout for fast mode is 30 seconds
+   * - Start(timeout) with timeout = 0 will advertise forever (until connected)
+   * 
+   * For recommended advertising interval
+   * https://developer.apple.com/library/content/qa/qa1931/_index.html   
+   */
+  Bluefruit.Advertising.restartOnDisconnect(true);
+  Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
+  Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
+  Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds  
+}
+
+// callback invoked when central connects
+void connect_callback(uint16_t conn_handle)
+{
+  // Get the reference to current connection
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char central_name[32] = { 0 };
+  connection->getPeerName(central_name, sizeof(central_name));
+
+  Serial.print("Connected to ");
+  Serial.println(central_name);
+}
+
+/**
+ * Callback invoked when a connection is dropped
+ * @param conn_handle connection where this event happens
+ * @param reason is a BLE_HCI_STATUS_CODE which can be found in ble_hci.h
+ */
+void disconnect_callback(uint16_t conn_handle, uint8_t reason)
+{
+  (void) conn_handle;
+  (void) reason;
+
+  Serial.println();
+  Serial.print("Disconnected, reason = 0x"); Serial.println(reason, HEX);
+}
+void recieve_blueart()
+{
+  static boolean recvInProgress = false;
+  static byte ndx = 0;
+  char endMarker = '\n';
+  char rc;
+
+  while (bleuart.available() > 0 && blueart_newData == false) {
+    rc = bleuart.read();
+
+    
+    if (rc != endMarker) {
+      blueart_receivedChars[ndx] = rc;
+      ndx++;
+      if (ndx >= blueart_numChars) {
+          ndx = blueart_numChars - 1;
+      }
+    }
+    else {
+      blueart_receivedChars[ndx] = '\0'; // terminate the string
+      recvInProgress = false;
+      ndx = 0;
+      blueart_newData = true;
+    }
+      
+
+      
+  }
+  if (blueart_newData == true) {
+        strcpy(blueart_tempChars, blueart_receivedChars);
+        blueart_parseData();
+        blueart_parseInput();
+        blueart_newData = false;
+    }
+
+}
+
+void blueart_parseData() 
+{      // split the data into its parts
+
+    char * strtokIndx; // this is used by strtok() as an index
+
+    strtokIndx = strtok(blueart_tempChars," ");      // get the first part - the string
+    strcpy(blueart_returnCommand, strtokIndx); // copy it to blueart_returnCommand
+
+    strtokIndx = strtok(NULL," ");      // get the first part - the string
+    strcpy(blueart_returnVariable, strtokIndx); // copy it to blueart_returnVariable
+
+    strtokIndx = strtok(NULL," ");      // get the first part - the string
+    strcpy(blueart_returnValue, strtokIndx); // copy it to blueart_returnValue
  
-    // power down nrf52.
-    
-    sd_power_system_off();                              // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
-  } 
-}
-*/
+    //strtokIndx = strtok(NULL, " "); // this continues where the previous call left off
+    //integerFromPC = atoi(strtokIndx);     // convert this part to an integer
 
-/*
-void writeConfig()
+    //strtokIndx = strtok(NULL, " ");
+    //floatFromPC = atof(strtokIndx);     // convert this part to a float
+
+}
+
+void blueart_get(bool report_all = false)
 {
-  InternalFS.begin();
-  file.open(FILENAME, FILE_O_READ);
-
-
-  //String config_contents;
-  //config_contents = "reset:";// + String(uninitialized) + ",pan:" + String(pan) + ",channel:" + String(com_channel)   + ",src_short_addr:" + String(src_short_addr)   + ",dst_short_addr:" + String(dst_short_addr)  + ",polling_rate:" + String(polling_rate);
-
-
-  // file existed
-  if ( file )
+  if (strcmp(blueart_returnVariable, "uninitialized") == 0 || report_all)
   {
-    Serial.println(FILENAME " file exists");
-    
-    uint32_t readlen;
-    char buffer[64] = { 0 };
-    readlen = file.read(buffer, sizeof(buffer));
-
-    buffer[readlen] = 0;
-    Serial.println(buffer);
-    file.close();
-  }else
-  {
-    Serial.print("Open " FILENAME " file to write ... ");
-
-    if( file.open(FILENAME, FILE_O_WRITE) )
-    {
-      Serial.println("OK");
-      
-      file.write(CONTENTS, strlen(CONTENTS));
-      file.close();
-    }else
-    {
-      Serial.println("Failed!");
-    }
+    bleuart.printf("uninitialized = %d \r\n", configurationVariables.uninitialized);
   }
-  InternalFS.end();
+  if (strcmp(blueart_returnVariable, "pollingRate") == 0 || report_all)
+  {
+    bleuart.printf("pollingRate = %d \r\n", configurationVariables.pollingRate);
+ 
+  }
+  if (strcmp(blueart_returnVariable, "debounceDelay") == 0 || report_all)
+  {
+    bleuart.printf("debounceDelay = %d \r\n", configurationVariables.debounceDelay);
+  }
+  if (strcmp(blueart_returnVariable, "buttonLongPressLength") == 0 || report_all)
+  {
+    bleuart.printf("buttonLongPressLength = %d \r\n", configurationVariables.buttonLongPressLength);
+  }
+  if (strcmp(blueart_returnVariable, "buttonDoublePressTime") == 0 || report_all)
+  {
+    bleuart.printf("buttonDoublePressTime = %d \r\n", configurationVariables.buttonDoublePressTime);
+  }
+  if (strcmp(blueart_returnVariable, "buttonHeartbeatUnpressed") == 0 || report_all)
+  {
+    bleuart.printf("buttonHeartbeatUnpressed = %d \r\n", configurationVariables.buttonHeartbeatUnpressed);
+  }
+  if (strcmp(blueart_returnVariable, "pairingDelay") == 0 || report_all)
+  {
+    bleuart.printf("pairingDelay = %d \r\n", configurationVariables.pairingDelay);
+  }
+  if (strcmp(blueart_returnVariable, "laserDelay") == 0 || report_all)
+  {
+    bleuart.printf("laserDelay = %d \r\n", configurationVariables.laserDelay);
+  }
+  if (strcmp(blueart_returnVariable, "idleDelay") == 0 || report_all)
+  {
+    bleuart.printf("idleDelay = %d \r\n", configurationVariables.idleDelay);
+  }
+  if (strcmp(blueart_returnVariable, "idleHeartbeatDelay") == 0 || report_all)
+  {
+    bleuart.printf("idleHeartbeatDelay = %d \r\n", configurationVariables.idleHeartbeatDelay);
+  }
+  if (strcmp(blueart_returnVariable, "pan") == 0 || report_all)
+  {
+    uint16_t v_return = configurationVariables.pan[1] * 256 + configurationVariables.pan[0];
+    bleuart.printf("pan = %04x\r\n", __builtin_bswap16(v_return));
+    
+  }
+  if (strcmp(blueart_returnVariable, "destination") == 0 || report_all)
+  {
+    uint16_t v_return = configurationVariables.destination[1] * 256 + configurationVariables.destination[0];
+    bleuart.printf("destination = %04x\r\n", __builtin_bswap16(v_return));
+  }
+  if (strcmp(blueart_returnVariable, "source") == 0 || report_all)
+  {
+    uint16_t v_return = configurationVariables.source[1] * 256 + configurationVariables.source[0];
+    bleuart.printf("source = %04x\r\n", __builtin_bswap16(v_return));
+  }
+  if (strcmp(blueart_returnVariable, "ackInterval") == 0 || report_all)
+  {
+    bleuart.printf("ackInterval = %d \r\n", configurationVariables.ackInterval);
+  }
+  if (strcmp(blueart_returnVariable, "channel") == 0 || report_all)
+  {
+    bleuart.printf("channel = %d \r\n", configurationVariables.channel);
+    
+  }
+  if (strcmp(blueart_returnVariable, "channelRx") == 0 || report_all)
+  {
+    bleuart.printf("channelRx = %d \r\n", configurationVariables.channelRx);
+  } else
+  {
+    //bleuart.print("error: variable does not exist");
+  }
 }
 
-void readConfig()
+void blueart_set()
 {
-  InternalFS.begin();
-  file.open(FILENAME, FILE_O_READ);
-
-
-  //String config_contents = "reset:" + String(uninitialized) + ",pan:" + String(pan);
-  //+ ",channel:" + String(com_channel)
-  //+ ",src_short_addr:" + String(src_short_addr)
-  //+ ",dst_short_addr:" + String(dst_short_addr)
-  //+ ",polling_rate:" + String(polling_rate);
-
-
-
-  // file existed
-  if ( file )
+  if (strcmp(blueart_returnVariable, "uninitialized") == 0)
   {
-    Serial.println(FILENAME " file exists");
-    
-    uint32_t readlen;
-    char buffer[64] = { 0 };
-    readlen = file.read(buffer, sizeof(buffer));
-
-    buffer[readlen] = 0;
-    Serial.println(buffer);
-    file.close();
-  }else
-  {
-    Serial.print("Open " FILENAME " file to write ... ");
-
-    if( file.open(FILENAME, FILE_O_WRITE) )
+    int v_return = strtol(blueart_returnValue,NULL,10);
+    if (v_return >= 0)
     {
-      Serial.println("OK");
-      
-      file.write(CONTENTS, strlen(CONTENTS));
-      file.close();
-    }else
-    {
-      Serial.println("Failed!");
+      configurationVariables.uninitialized = v_return;
+      bleuart.printf("uninitialized = %d \r\n", configurationVariables.uninitialized);
+      bleuart.print("when finished setting variables, send a save command");
     }
+    else
+    {
+      bleuart.print("error: invalid uninitialized.");
+    }
+    
+  } else
+  if (strcmp(blueart_returnVariable, "pollingRate") == 0)
+  {
+    int v_return = strtol(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.pollingRate = v_return;
+      bleuart.printf("pollingRate = %d \r\n", configurationVariables.pollingRate);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid pollingRate");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "debounceDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.debounceDelay = v_return;
+      bleuart.printf("debounceDelay = %d \r\n", configurationVariables.debounceDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid debounceDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "buttonLongPressLength") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.buttonLongPressLength = v_return;
+      bleuart.printf("buttonLongPressLength = %d \r\n", configurationVariables.buttonLongPressLength);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid buttonLongPressLength");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "buttonDoublePressTime") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.buttonDoublePressTime = v_return;
+      bleuart.printf("buttonDoublePressTime = %d \r\n", configurationVariables.buttonDoublePressTime);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid buttonDoublePressTime");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "buttonHeartbeatUnpressed") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.buttonHeartbeatUnpressed = v_return;
+      bleuart.printf("buttonHeartbeatUnpressed = %d \r\n", configurationVariables.buttonHeartbeatUnpressed);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid buttonHeartbeatUnpressed");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "pairingDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.pairingDelay = v_return;
+      bleuart.printf("pairingDelay = %d \r\n", configurationVariables.pairingDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid pairingDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "laserDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.laserDelay = v_return;
+      bleuart.printf("laserDelay = %d \r\n", configurationVariables.laserDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid laserDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "idleDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.idleDelay = v_return;
+      bleuart.printf("idleDelay = %d \r\n", configurationVariables.idleDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid idleDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "sleepingDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.sleepingDelay = v_return;
+      bleuart.printf("sleepingDelay = %d \r\n", configurationVariables.sleepingDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid sleepingDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "idleHeartbeatDelay") == 0)
+  {
+    unsigned long v_return = strtoul(blueart_returnValue,NULL,10);
+    if (v_return > 0)
+    {
+      configurationVariables.idleHeartbeatDelay = v_return;
+      bleuart.printf("idleHeartbeatDelay = %d \r\n", configurationVariables.idleHeartbeatDelay);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid idleHeartbeatDelay");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "pan") == 0) //todo
+  {
+    uint16_t v_return = configurationVariables.pan[1] * 256 + configurationVariables.pan[0];
+    bleuart.printf("pan = %04x\r\n", __builtin_bswap16(v_return));
+    //set variable
+  } else
+  if (strcmp(blueart_returnVariable, "destination") == 0) //todo
+  {
+    uint16_t v_return = configurationVariables.pan[1] * 256 + configurationVariables.pan[0];
+    bleuart.printf("pan = %04x\r\n", __builtin_bswap16(v_return));
+    
+    //set variable
+  } else
+  if (strcmp(blueart_returnVariable, "source") == 0) //todo
+  {
+    uint16_t v_return = configurationVariables.pan[1] * 256 + configurationVariables.pan[0];
+    bleuart.printf("pan = %04x\r\n", __builtin_bswap16(v_return));
+    
+    //set variable
+  } else
+  if (strcmp(blueart_returnVariable, "ackInterval") == 0)
+  {
+    long v_return = strtol(blueart_returnValue,NULL,10);
+    if (v_return < 1000 && v_return >= 0)
+    {
+      configurationVariables.ackInterval = v_return;
+      bleuart.printf("ackInterval = %d \r\n", configurationVariables.ackInterval);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid ackInterval");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "channel") == 0)
+  {
+    int v_return = strtol(blueart_returnValue,NULL,10);
+    if (v_return < 27 && v_return > 10)
+    {
+      configurationVariables.channel = v_return;
+      bleuart.printf("channel = %d \r\n", configurationVariables.channel);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid channel number.");
+    }
+  } else
+  if (strcmp(blueart_returnVariable, "channelRx") == 0)
+  {
+    int v_return = strtol(blueart_returnValue,NULL,10);
+    if (v_return < 27 && v_return > 10)
+    {
+      configurationVariables.channelRx = v_return;
+      bleuart.printf("channelRx = %d \r\n", configurationVariables.channelRx);
+      bleuart.print("when finished setting variables, send a save command");
+    }
+    else
+    {
+      bleuart.print("error: invalid channel number.");
+    }
+  } else
+  {
+    bleuart.print("error: variable ");
+    bleuart.print(blueart_returnVariable);
+    bleuart.print( "does not exist");
   }
-  InternalFS.end();
 }
-*/
 
+void blueart_stop() //right now this completely resets the device, which works but it would be nicer if it just shut off the service
+{
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  uint16_t connections = Bluefruit.connected();
+  for (uint16_t conn = 0; conn < connections; conn++) {
+    Bluefruit.disconnect(conn);
+  }
+  Bluefruit.Advertising.stop();
+  //set_radio_mode(OFF);
+  sd_softdevice_disable();
+
+}
+
+void blueart_parseInput() 
+{
+  if (strcmp(blueart_returnCommand, "exit") == 0) // hangs somewhere when reenabling 802 radio
+  {
+    bleuart.print("recieved command: exit");
+    //shut down blueart 
+    blueart_stop();
+    //switch to probe mode //things fail here
+    delay(1000);
+    set_radio_mode(SEND);
+    probe_mode_c = PROBE;
+    probeCycle();
+
+  } else
+  if (strcmp(blueart_returnCommand, "get") == 0)
+  {
+    blueart_get();
+  } else
+  if (strcmp(blueart_returnCommand, "set") == 0)
+  {
+    bleuart.print("recieved command: set");
+    blueart_set();
+  } else
+  if (strcmp(blueart_returnCommand, "report") == 0)
+  {
+    bleuart.print("recieved command: report");
+    blueart_get(true);
+  } else
+  if (strcmp(blueart_returnCommand, "save") == 0) // fails to restart BLE UART service on return
+  {
+    bleuart.print("recieved command: save");
+
+    blueart_stop();
+    write_current_flash_vars();
+    delay(1000);
+
+    //setup_blueart();
+    //blueart_get(true);
+  } else
+  if (strcmp(blueart_returnCommand, "erase") == 0) // fails to restart BLE UART service on return
+  {
+    bleuart.print("recieved command: erase");
+
+    blueart_stop();
+    eraseFlashPage(flashConfig,true);
+    delay(1000);
+
+    //setup_blueart();
+    //blueart_get(true);
+  } else
+  if (strcmp(blueart_returnCommand, "clear") == 0)
+  {
+    bleuart.print("recieved command: clear");
+    read_current_flash_vars();
+    blueart_get(true);
+  } else
+  if (strcmp(blueart_returnCommand, "help") == 0) // need to do a writeup of all commands and vars. Proably use report to get var names. 
+  {
+    bleuart.print("recieved command: help");
+  } else
+  if (strcmp(blueart_returnCommand, "info") == 0) // need to report serial number, firmware version, etc.
+  {
+    bleuart.print("recieved command: info");
+  } else
+  if (strcmp(blueart_returnCommand, "readFlash") == 0)
+  {
+    bleuart.print("recieved command: readFlash");
+    report_current_flash_vars_bleuart();
+  } else
+  if (strcmp(blueart_returnCommand, "test") == 0) // hangs somewhere when reenabling 802 radio
+  {
+    bleuart.print("recieved command: test.");
+    //shut down blueart 
+    blueart_stop();
+    //switch to probe mode //things fail here
+    delay(1000);
+    set_radio_mode(SEND);
+    probe_mode_c = PROBE;
+    probeCycle();
+  } else
+  {
+    bleuart.print("error: improper command");
+  }
+
+}
+///////////////////////core////////////////////////////
 
 void sendbutonpress(int state)
 {
   vbatt = analogRead(PIN_VBAT);
-  vbatt = 1000*0.1856 * 3.6 * vbatt / 4096;
+  vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;
   String out_str;
   out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG)) ; //2.961 for 12 bit
   Serial.println(out_str);
@@ -575,7 +1208,7 @@ void probeCycle()
   //held
   if (reading == HIGH && button_state == HIGH)
   {
-    if ((currentMillis-lastDebounceTime)>buttonLongPressLength)
+    if ((currentMillis-lastDebounceTime)>configurationVariables.buttonLongPressLength)
     {
       Serial.println("pairing");
       probe_mode_c = PAIR;
@@ -588,14 +1221,14 @@ void probeCycle()
   //released
   if (reading == LOW && button_state == HIGH)
   {
-    if ((currentMillis-lastDebounceTime) > debounceDelay && !button_held)
+    if ((currentMillis-lastDebounceTime) > configurationVariables.debounceDelay && !button_held)
     {
       //button has been released test for double press
-      if ((currentMillis - lastSwitchTime) >= buttonDoublePressTime) {
+      if ((currentMillis - lastSwitchTime) >= configurationVariables.buttonDoublePressTime) {
         single_press = 1;
         lastSwitchTime = currentMillis;
         
-      } else if ((currentMillis - lastSwitchTime) < buttonDoublePressTime) {
+      } else if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
         laserOn = !laserOn;
         Serial.println("double press");
         single_press = 0;
@@ -606,14 +1239,14 @@ void probeCycle()
 
   button_state = reading;
 
-  if ((single_press == true) && ((currentMillis -lastDebounceTime) > (buttonDoublePressTime)))
+  if ((single_press == true) && ((currentMillis -lastDebounceTime) > (configurationVariables.buttonDoublePressTime)))
   {
     single_press = false;
     Serial.println("single Press");
   }
 
 
-  if (button_state == LOW && ((currentMillis - buttonHeartbeatUnpressedTime) < buttonHeartbeatUnpressed))
+  if (button_state == LOW && ((currentMillis - buttonHeartbeatUnpressedTime) < configurationVariables.buttonHeartbeatUnpressed))
   {
     //only send button presses as low on a certain interval
     buttonHeartbeatUnpressedTime = currentMillis;
@@ -645,7 +1278,7 @@ void probeCycle()
       }
      
     }
-    if ((currentMillis - lastDebounceTime) > laserDelay)
+    if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay)
     {
       // shut the laser off
       laserOn = false;
@@ -658,7 +1291,7 @@ void probeCycle()
     digitalWrite(LED_BLUE, HIGH);
   }
 
-  delay(polling_rate);   
+  delay(configurationVariables.pollingRate);   
 
 
   //test for idle
@@ -674,7 +1307,7 @@ void pairCycle()
   build_packet(0x03, 0xea, 0x0b);
   send_packet(packet);
   set_radio_mode(RECIEVE);
-  int result = receive_test();
+  int result = recieve_packet();
   if (result == 2){ //ack recieved
     //Serial.println("ack recieved"); 
 
@@ -689,7 +1322,7 @@ void pairCycle()
     delay(2000);
     build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
     set_radio_mode(RECIEVE);
-    while (receive_test() != 2 && (currentMillis - lastDebounceTime) > pairingDelay)
+    while (recieve_packet() != 2 && (currentMillis - lastDebounceTime) > configurationVariables.pairingDelay)
     {
       Serial.print("trap");
       set_radio_mode(SEND);
@@ -699,40 +1332,45 @@ void pairCycle()
       currentMillis = millis();
     }
     Serial.println("pairing complete"); 
+    #ifndef ConstantPair
     probe_mode_c = PROBE;
+    #endif
   
   }
-  result = receive_test();
+  result = recieve_packet();
   if (result == 1){ //test for pairing confirmation from machine
-    Serial.println("pair success");
+    Serial.println("pair first packet confirmed, sending second ack then next packet");
     //delay(4);
     set_radio_mode(SEND);
     send_ack();
     delay(2000);
 
 
-
-    build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
     set_radio_mode(RECIEVE);
     //send packet to channel 26???
-    while (receive_test() != 2 && (currentMillis - lastDebounceTime) > pairingDelay) 
+    while (recieve_packet() != 2 && (currentMillis - lastDebounceTime) > configurationVariables.pairingDelay) 
     {
       Serial.print("trap");
       set_radio_mode(SEND);
-      build_packet(0x06, 0xea, 0x0b);
+      build_packet(0x06, 0xea, 0x0b); //send confirm packet to machine
       send_packet(packet);
-      delay(4000);
+      delay(50);
       currentMillis = millis();
     }
     Serial.println("pairing complete"); 
+    #ifndef ConstantPair
     probe_mode_c = PROBE;
+    #endif
+    
   }
   delay(50);
 
-  if ((currentMillis - lastDebounceTime) > pairingDelay)// || digitalRead(PIN_BUTTON)) 
+  if ((currentMillis - lastDebounceTime) > configurationVariables.pairingDelay)// || digitalRead(PIN_BUTTON)) 
   {
     // if pairing delay has been reached, go back to probe mode
+    #ifndef ConstantPair
     probe_mode_c = PROBE;
+    #endif
     
   }
 
@@ -764,7 +1402,7 @@ void laserCycle() //this does nothing right now. It is here in case we want to i
   unsigned long currentMillis = millis();
   
   //sendpacket("pairing");
-  if ((currentMillis - lastDebounceTime) > laserDelay)// || digitalRead(PIN_BUTTON)) 
+  if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay)// || digitalRead(PIN_BUTTON)) 
   {
     // if pairing delay has been reached, go back to probe mode
     probe_mode_c = PROBE;
@@ -789,81 +1427,25 @@ void laserCycle() //this does nothing right now. It is here in case we want to i
 
 void updateCycle()
 {
-}
-
-void testCycle()
-{
-  bool pair = true;
-  //Serial.print("n");
-  if (pair)//!digitalRead(2))
+  setup_blueart();
+  while(1)
   {
-    set_radio_mode(SEND);
-    build_packet(0x03, 0xea, 0x0b);
-    send_packet(packet);
-    set_radio_mode(RECIEVE);
-    int result = receive_test();
-    if (result == 2){ //ack recieved
-      //Serial.println("ack recieved"); 
+    // Forward data from HW Serial to BLEUART
+    while (Serial.available() && false)
+    {
+      // Delay to wait for enough input, since we have a limited transmission buffer
+      delay(2);
 
-      delay_ns(100);   
+      uint8_t buf[64];
+      int count = Serial.readBytes(buf, sizeof(buf));
+      bleuart.write( buf, count );
     }
 
-    if (result == 1){ //test for pairing confirmation from machine
-      Serial.println("pair success");
-      //delay(4);
-      set_radio_mode(SEND);
-      send_ack();
-      delay(2000);
-      build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
-      set_radio_mode(RECIEVE);
-      while (receive_test() != 2)
-      {
-        set_radio_mode(SEND);
-        build_packet(0x06, 0xea, 0x0b);
-        send_packet(packet);
-        delay(400000);
-      }
-      Serial.println("pairing complete"); 
-      while(1);
-    
-    }
-    result = receive_test();
-    if (result == 1){ //test for pairing confirmation from machine
-      Serial.println("pair success");
-      //delay(4);
-      set_radio_mode(SEND);
-      send_ack();
-      delay(2000);
-
-
-
-      build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
-      set_radio_mode(RECIEVE);
-      //send packet to channel 26???
-      while (receive_test() != 2)
-      {
-        set_radio_mode(SEND);
-        build_packet(0x06, 0xea, 0x0b);
-        send_packet(packet);
-        delay(400000);
-      }
-      Serial.println("pairing complete"); 
-      while(1);
-    }
-    delay(50);
-
-    
-
-  }else if (!pair){
-    //digitalWrite(LED_RED, LOW);
-    
-    
-    build_packet(0x01, 0x99, 0x11);
-    send_packet(packet);
-    //receive_test();
-    delay(6);
+    // Forward from BLEUART to HW Serial
+    recieve_blueart();
+        
   }
-
+  
 }
 
 void offCycle()
@@ -881,8 +1463,8 @@ void offCycle()
 
 void testforIdle()
 {
-// shutdown when time reaches SLEEPING_DELAY ms
-  if ((currentMillis>idle_Delay + lastDebounceTime))
+// shutdown when time reaches sleepingDelay ms
+  if ((currentMillis>configurationVariables.idleDelay + lastDebounceTime))
   {
     // to reduce power consumption when sleeping, turn off all your LEDs (and other power hungry devices)
     digitalWrite(LED_RED, HIGH);
@@ -902,7 +1484,7 @@ void idleCycle()
     
     currentMillis = millis();
     
-    if ((currentMillis>sleeping_delay + lastDebounceTime))
+    if ((currentMillis>configurationVariables.sleepingDelay + lastDebounceTime))
     {
       // to reduce power consumption when sleeping, turn off all your LEDs (and other power hungry devices)
       digitalWrite(LED_RED, HIGH);
@@ -912,12 +1494,12 @@ void idleCycle()
       probe_mode_c = SLEEP;
       return;
     } 
-    if ((currentMillis - idleHeartbeatUnpressedTime >idle_heartbeat_delay)) {
+    if ((currentMillis - idleHeartbeatUnpressedTime >configurationVariables.idleHeartbeatDelay)) {
       //send heartbeat to machine
       idleHeartbeatUnpressedTime = currentMillis;
 
       vbatt = analogRead(PIN_VBAT); //convert to function later
-      vbatt = 1000*0.1856 * 3.6 * vbatt / 4096; //2.961 for 12 bit. Exact value to be determined via voltage logging later. 
+      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096; //2.961 for 12 bit. Exact value to be determined via voltage logging later. 
       String out_str;
       out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG)) ; 
       Serial.println(out_str);
@@ -940,6 +1522,16 @@ void idleCycle()
   
 }
 
+/////////////////////////////////tests///////////////////////////////////////////////////////////////////////////////////////////////////
+
+void testCycle()
+{
+  
+
+}
+
+/////////////////////////////////////Setup and main loop ////////////////////////////////////////////////////////////////////////////////
+
 // the setup function runs once when you press reset or power the board
 void setup() {
   //Bluefruit.begin();          // Sleep functions need the softdevice to be active.
@@ -956,7 +1548,7 @@ void setup() {
 
   Serial.begin(115200);
   delay(1000);
-  //while(!Serial) delay(10);
+  //while(!Serial) delay(10); //remove for battery only operation
   Serial.println("nRF52840 Carvera Wireless Probe Core Features Example");
   Serial.println("--------------------------------\n");
 
@@ -973,11 +1565,18 @@ void setup() {
   // initialise ADC wireing_analog_nRF52.c:73
   analogReference(AR_DEFAULT);        // default 0.6V*6=3.6V  wireing_analog_nRF52.c:73
   analogReadResolution(16);           // wireing_analog_nRF52.c:39
-
+  
+  read_current_flash_vars();
   //filesystem setup
   set_radio_mode(SEND);
 
-  //readConfig();
+  #ifdef ConstantPair
+  probe_mode_c = PAIR;
+  #endif
+  #ifdef StartBootMode
+  probe_mode_c = UPDATE;
+  #endif
+  
 }
 
 // the loop function runs over and over again forever
