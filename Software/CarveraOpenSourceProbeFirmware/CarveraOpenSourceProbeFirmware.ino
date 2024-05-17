@@ -17,7 +17,7 @@
 #include <bluefruit.h>
 
 
-#define StartBootMode//uncomment to start in bootmode
+//#define StartBootMode//uncomment to start in bootmode
 //#define ConstantPair//uncomment to start and stay in pair mode. Overwritten by StartBootMode
 
 
@@ -71,7 +71,7 @@ configurationVariablesStruct configurationVariables;
 
 //communication setup
 uint8_t packet[127] = PACKET_PAIR;
-uint8_t seq = 1; // should probably sort this out at some point
+uint8_t seq = 1; 
 uint8_t ack_pkt[127] = {0x05, 0x02, 0x00, 0x02};
 //pairing wait
 unsigned long previousMillis = 0;  // will store last time LED was updated need to consolodate with primary wait times
@@ -323,7 +323,7 @@ void setup_radio_TXRX() // all the one time setup for the 802.15.4 radio
 {
   // radio power on
 	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
-  MMIO(RADIO_BASE, RADIO_OFFSET_TXPOWER) = 2; //set radio power to 1-8
+  MMIO(RADIO_BASE, RADIO_OFFSET_TXPOWER) = 4; //set radio power to 1-8
   // hf clock on
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1; // enable
@@ -562,9 +562,16 @@ int recieve_packet()
   //ack
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) { //check for CRC ok?
     if (pkt[0]==0x5){//} && pkt[4]==0x22 && pkt[5]==0x20) {
-      // length, PAN ok
-      //Serial.print(" packet ack ");
-      return 2;
+      //Serial.print(seq);
+      //Serial.print(pkt[3]);
+      if (pkt[3] = seq)
+      {
+        Serial.println("ack confirmed");
+        return 2;
+        
+        
+      }
+      
     }
   }
 
@@ -574,7 +581,7 @@ int recieve_packet()
       // length, PAN ok
       Serial.print(" length pan ok ");
       //Serial.print(pkt[10]);
-      ack_pkt[4] = pkt[3];
+      ack_pkt[3] = pkt[3];
       
       if (pkt[10] == 0x03){
         Serial.println(" confirm packet ");
@@ -1194,7 +1201,7 @@ void probeCycle()
 
   currentMillis = millis();
 
-  int reading = ! digitalRead(PIN_BUTTON);
+  int reading =  digitalRead(PIN_BUTTON);
   // check to see if you just pressed the button
   // (i.e. the input went from LOW to HIGH), and you've waited long enough
   // since the last press to ignore any noise:
@@ -1302,76 +1309,14 @@ void probeCycle()
 void pairCycle()
 {
   unsigned long currentMillis = millis();
+  unsigned long pairing_prevMillis = currentMillis;
+  int returnValue = 0;
 
-  set_radio_mode(SEND);
-  build_packet(0x03, 0xea, 0x0b);
-  send_packet(packet);
-  set_radio_mode(RECIEVE);
-  int result = recieve_packet();
-  if (result == 2){ //ack recieved
-    //Serial.println("ack recieved"); 
-
-    delay_ns(100);   
-  }
-
-  if (result == 1){ //test for pairing confirmation from machine
-    Serial.println("pair success");
-    //delay(4);
-    set_radio_mode(SEND);
-    send_ack();
-    delay(2000);
-    build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
-    set_radio_mode(RECIEVE);
-    while (recieve_packet() != 2 && (currentMillis - lastDebounceTime) > configurationVariables.pairingDelay)
-    {
-      Serial.print("trap");
-      set_radio_mode(SEND);
-      build_packet(0x06, 0xea, 0x0b);
-      send_packet(packet);
-      delay(4000);
-      currentMillis = millis();
-    }
-    Serial.println("pairing complete"); 
-    #ifndef ConstantPair
-    probe_mode_c = PROBE;
-    #endif
-  
-  }
-  result = recieve_packet();
-  if (result == 1){ //test for pairing confirmation from machine
-    Serial.println("pair first packet confirmed, sending second ack then next packet");
-    //delay(4);
-    set_radio_mode(SEND);
-    send_ack();
-    delay(2000);
-
-
-    set_radio_mode(RECIEVE);
-    //send packet to channel 26???
-    while (recieve_packet() != 2 && (currentMillis - lastDebounceTime) > configurationVariables.pairingDelay) 
-    {
-      Serial.print("trap");
-      set_radio_mode(SEND);
-      build_packet(0x06, 0xea, 0x0b); //send confirm packet to machine
-      send_packet(packet);
-      delay(50);
-      currentMillis = millis();
-    }
-    Serial.println("pairing complete"); 
-    #ifndef ConstantPair
-    probe_mode_c = PROBE;
-    #endif
-    
-  }
-  delay(50);
-
-  if ((currentMillis - lastDebounceTime) > configurationVariables.pairingDelay)// || digitalRead(PIN_BUTTON)) 
+  if (currentMillis - lastDebounceTime > configurationVariables.pairingDelay)
   {
-    // if pairing delay has been reached, go back to probe mode
-    #ifndef ConstantPair
+    lastDebounceTime = currentMillis;
     probe_mode_c = PROBE;
-    #endif
-    
+    return;
   }
 
   if (currentMillis - blinkMillis >= 1000) {
@@ -1389,6 +1334,69 @@ void pairCycle()
     digitalWrite(LED_GREEN, blinkState); 
   }
 
+  Serial.println("starting Pairing");
+  //send pairing packet 1
+  set_radio_mode(RECIEVE);
+  while (recieve_packet() != 2) 
+  {
+    if ((currentMillis - pairing_prevMillis) > 3000) //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
+    {
+      Serial.println("Machine never sent first confirm packet");
+      return;
+    }
+    set_radio_mode(SEND);
+    build_packet(0x03, 0xea, 0x0b);
+    send_packet(packet);
+    set_radio_mode(RECIEVE);
+    currentMillis = millis();
+    
+  }
+  //Serial.println("first packet confirmed, waiting for packet from machine");
+  //wait for response packet
+  while (recieve_packet() != 1)
+  {
+    currentMillis = millis();
+    if ((currentMillis - pairing_prevMillis) > 3000) //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
+    {
+      Serial.println("pairing timout: waiting on machine response");
+      return;
+    }
+  }
+  Serial.print("recieved machine packet, sending second confirm");
+  set_radio_mode(SEND);
+  send_ack();
+
+  
+  build_packet(0x06, 0xea, 0x0b, true);
+  send_packet(packet);
+  set_radio_mode(RECIEVE);
+  //send final packet
+  returnValue = recieve_packet() ;
+  while (returnValue != 2)
+  {
+    if (returnValue == 1)
+    {
+      send_ack();
+    }
+    if ((currentMillis - pairing_prevMillis) > 3000) //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
+    {
+      Serial.println("pairing timout: confirm packet");
+      return;
+    }
+    set_radio_mode(SEND);
+    build_packet(0x06, 0xea, 0x0b, true); //send confirm packet to machine
+    send_packet(packet);
+    currentMillis = millis();
+    set_radio_mode(RECIEVE);
+
+
+
+    returnValue = recieve_packet();
+  }
+  set_radio_mode(SEND);
+  send_ack();
+  Serial.println("Pairing success");
+  probe_mode_c = PROBE;
 
 
 
@@ -1480,7 +1488,7 @@ void idleCycle()
 {
   idleHeartbeatUnpressedTime = currentMillis;
   Serial.println("idle");
-  while(digitalRead(PIN_BUTTON)){
+  while(!digitalRead(PIN_BUTTON)){
     
     currentMillis = millis();
     
