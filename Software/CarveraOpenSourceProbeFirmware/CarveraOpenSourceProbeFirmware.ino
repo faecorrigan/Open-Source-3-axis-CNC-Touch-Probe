@@ -19,7 +19,7 @@
 
 //#define StartBootMode//uncomment to start in bootmode
 //#define ConstantPair//uncomment to start and stay in pair mode. Overwritten by StartBootMode
-
+//#define SerialDebug // uncomment to use serial debugging. 
 
 
 #define PIN_VBAT        (32)  // D32 battery voltage
@@ -30,13 +30,13 @@
 #define PIN_WAKEUP      2
 #define PIN_BOOTJUMPER  23
 #define PIN_OTHERJUMPER 1
-#define BATTERYPOWERCONVERSIONRATIO 1000*0.1856 * 3.6
+#define BATTERYPOWERCONVERSIONRATIO 1000*0.1856 * 3.6 //at some point calibrate this value to voltage readings from probe
 
 
 enum ProbeMode { UNDEF, INIT, IDLE, SLEEP, PAIR, PROBE, LASER, UPDATE, TEST}; //laser mode is wrapped inside pairing mode. 
 enum RadioMode  {OFF,SEND,RECIEVE};
 
-ProbeMode probe_mode_c = PROBE;//PROBE; //set to test and modify testCycle() for dev work
+ProbeMode probe_mode_c = PROBE;
 
 struct configurationVariablesStruct 
 {
@@ -101,7 +101,7 @@ int16_t vbatt = 0;
 
 
 //flash storage setup
-volatile uint32_t *flashConfig = (uint32_t *)0xfef00; //rename to flash page the second hex digit is the page number
+volatile uint32_t *flashConfig = (uint32_t *)0xfef00; //rename to flash page. the second hex digit is the page number
 
 //bluetooth BLE uarrt setup
 BLEDfu  bledfu;  // OTA DFU service
@@ -176,7 +176,7 @@ void report_flash_vars_to_serial() //for testing.
 
 void write_default_flash_vars()
 {
-  //writeFlash(&flashConfig[0], configurationVariables, true); //todo
+  //writeFlash(&flashConfig[0], configurationVariables, true); //todo. Alternatively when testing the probe, put into bluetooth mode and run a save command
 }
 
 void write_current_flash_vars()
@@ -197,9 +197,7 @@ void write_current_flash_vars()
   // loop thorugh the elements of the struct
   for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
   {
-    //writeFlash(&flashConfig[cnt], *(p++), true);
     // p points to an address of an element in the array; *p gets you the value ofthat address
-    // print it and next point the pointer to the address of the next element
     writeFlash((flashConfig + cnt),*(p),true );
     Serial.println(*(p));
     p++;
@@ -225,10 +223,7 @@ void read_current_flash_vars()
   // loop thorugh the elements of the struct
   for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
   {
-    //writeFlash(&flashConfig[cnt], *(p++), true);
-    // p points to an address of an element in the array; *p gets you the value ofthat address
-    // print it and next point the pointer to the address of the next element
-    
+    // p points to an address of an element in the array; *p gets you the value ofthat address    
     *p = *(flashConfig + cnt);
     Serial.println(*(p));
     p++;
@@ -237,18 +232,11 @@ void read_current_flash_vars()
 
 void report_current_flash_vars_bleuart()
 {
-  //uint32_t *p;
-  // take address of configurationVariables and assign to the pointer
-  //p = (uint32_t*)&configurationVariables;
-
+=
   // loop thorugh the elements of the struct
   for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
   {
-    //writeFlash(&flashConfig[cnt], *(p++), true);
-    // p points to an address of an element in the array; *p gets you the value ofthat address
-    // print it and next point the pointer to the address of the next element
     bleuart.print(*(flashConfig + cnt));
-    //p++;
   }
 }
 
@@ -602,7 +590,6 @@ int recieve_packet()
   }
   Serial.println();
   */
-	//while(1) {}
   return 0;
 }
 
@@ -650,7 +637,6 @@ void setup_blueart()
   startAdv();
 
   Serial.println("Please use Adafruit's Bluefruit LE app to connect in UART mode");
-  Serial.println("Once connected, enter character(s) that you wish to send");
 }
 
 
@@ -758,12 +744,6 @@ void blueart_parseData()
 
     strtokIndx = strtok(NULL," ");      // get the first part - the string
     strcpy(blueart_returnValue, strtokIndx); // copy it to blueart_returnValue
- 
-    //strtokIndx = strtok(NULL, " "); // this continues where the previous call left off
-    //integerFromPC = atoi(strtokIndx);     // convert this part to an integer
-
-    //strtokIndx = strtok(NULL, " ");
-    //floatFromPC = atof(strtokIndx);     // convert this part to a float
 
 }
 
@@ -840,7 +820,7 @@ void blueart_get(bool report_all = false)
     bleuart.printf("channelRx = %d \r\n", configurationVariables.channelRx);
   } else
   {
-    //bleuart.print("error: variable does not exist");
+    bleuart.print("error: variable does not exist");
   }
 }
 
@@ -1157,11 +1137,11 @@ void blueart_parseInput()
     bleuart.print("recieved command: test.");
     //shut down blueart 
     blueart_stop();
-    //switch to probe mode //things fail here
+    //switch mode //things fail here
     delay(1000);
     set_radio_mode(SEND);
-    probe_mode_c = PROBE;
-    probeCycle();
+    probe_mode_c = TEST;
+    testCycle();
   } else
   {
     bleuart.print("error: improper command");
@@ -1186,12 +1166,12 @@ void sendbutonpress(int state)
     build_packet(0x01, vbatt & 0xff, vbatt >> 8);
     send_packet(packet);
   }
-  else{
+  else{ //todo add an option to send button not pressed over 802
     digitalWrite(LED_RED, LOW);   // turn the LED off by making the voltage HIGH
     digitalWrite(LED_GREEN, HIGH);  // turn the LED on (LOW is the voltage level)
     Serial.println("button released");
-    build_packet(0x00, vbatt & 0xff, vbatt >> 8);
-    send_packet(packet);
+    //build_packet(0x00, vbatt & 0xff, vbatt >> 8);
+    //send_packet(packet);
     
   }
 }
@@ -1397,11 +1377,6 @@ void pairCycle()
   send_ack();
   Serial.println("Pairing success");
   probe_mode_c = PROBE;
-
-
-
-
-
 }
 
 void laserCycle() //this does nothing right now. It is here in case we want to implement a standalone laser mode without the probing functions
@@ -1484,7 +1459,7 @@ void testforIdle()
   } 
 }
 
-void idleCycle()
+void idleCycle() //rewrite to a lower power state
 {
   idleHeartbeatUnpressedTime = currentMillis;
   Serial.println("idle");
@@ -1553,13 +1528,13 @@ void setup() {
   pinMode(PIN_BUTTON, INPUT_PULLUP);
 
   
-
+  #ifdef SerialDebug
   Serial.begin(115200);
   delay(1000);
   //while(!Serial) delay(10); //remove for battery only operation
   Serial.println("nRF52840 Carvera Wireless Probe Core Features Example");
   Serial.println("--------------------------------\n");
-
+  #endif
   //setup battery
   pinMode(PIN_VBAT, INPUT);
   pinMode(PIN_VBAT_ENABLE, OUTPUT);
