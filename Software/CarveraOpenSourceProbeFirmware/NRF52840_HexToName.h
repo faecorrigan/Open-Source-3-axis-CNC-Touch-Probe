@@ -266,7 +266,7 @@
 #define RTC_OFFSET_CC0 0x540
 #define RTC_OFFSET_CC1 0x544
 #define RTC_TICK_US 30.517
-#define RADIO_STATE_TXIDLE 10
+#define RTC_COUNTER_MAX 0xFFFFFF
 
 #define MMIO(base, offset) (*((volatile uint32_t*)(base + offset)))
 

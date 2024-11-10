@@ -12,6 +12,8 @@
  any redistribution
 *********************************************************************/
 
+#define LED_GREEN (13)
+
 #include "NRF52840_HexToName.h"
 #include <Arduino.h>
 #include <bluefruit.h>
@@ -36,7 +38,7 @@
 enum ProbeMode { UNDEF, INIT, IDLE, SLEEP, PAIR, PROBE, LASER, UPDATE, TEST}; //laser mode is wrapped inside pairing mode. 
 enum RadioMode  {OFF,SEND,RECIEVE};
 
-ProbeMode probe_mode_c = PROBE;
+ProbeMode probe_mode_c = IDLE; //PROBE;
 
 struct configurationVariablesStruct 
 {
@@ -91,7 +93,6 @@ int blinkState = 0;
 unsigned long buttonLongPressMillis = 0;
 unsigned long lastSwitchTime = 0;
 unsigned long buttonHeartbeatUnpressedTime = 0;
-unsigned long idleHeartbeatUnpressedTime = 0;
 
 //laser setup variables
 bool laserOn = false;
@@ -212,8 +213,8 @@ void write_current_flash_vars()
 void read_current_flash_vars()
 {
   if (*(flashConfig) > 2 ){
-    bleuart.print("cannot read from flash");
-    bleuart.print(*(flashConfig),HEX);
+    //bleuart.print("cannot read from flash");
+    //bleuart.print(*(flashConfig),HEX);
     return;
   }
   uint32_t *p;
@@ -232,7 +233,7 @@ void read_current_flash_vars()
 
 void report_current_flash_vars_bleuart()
 {
-=
+
   // loop thorugh the elements of the struct
   for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
   {
@@ -244,19 +245,15 @@ void report_current_flash_vars_bleuart()
 
 
 void disable_radio(){
-  
-  //NRF_RADIO->SHORTS = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; //
-
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0)
-  {
-      // Do nothing.
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER)) {
+    // if on, cancel any pending tasks and disable
+    MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1;
+    while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
   }
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
 
-
+	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 0; // turn off radio
+  MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTOP) = 1; // disable HF clock
 }
 
 void set_radio_mode(RadioMode radio_mode)
@@ -265,12 +262,11 @@ void set_radio_mode(RadioMode radio_mode)
   switch (radio_mode)
   {
     case OFF: 
-      MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // 
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
-    break;
+      // already called disable_radio
+      break;
 
     case SEND:
+      MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1; // turn on radio
       MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel*5-50;
       MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
@@ -281,6 +277,7 @@ void set_radio_mode(RadioMode radio_mode)
       break;
 
     case RECIEVE: 
+      MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1; // turn on radio
       MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channelRx*5-50;
       //MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
       //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
@@ -311,7 +308,6 @@ void setup_radio_TXRX() // all the one time setup for the 802.15.4 radio
 {
   // radio power on
 	MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
-  MMIO(RADIO_BASE, RADIO_OFFSET_TXPOWER) = 4; //set radio power to 1-8
   // hf clock on
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0; // clear event
 	MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1; // enable
@@ -342,7 +338,7 @@ void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batter
   if (reset_seq){
     seq = 0x00;
   }
-  //packet lenght
+  //packet length
   packet[0]=14;  
   //source addressing mode
   packet[1] = 0x61;
@@ -386,7 +382,6 @@ void send_packet(uint8_t pkt[127]) {
 	}
 	state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
 	if (state != RADIO_STATE_TXIDLE) { 
-		MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 0;
     MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
 	}
 	while (state != RADIO_STATE_TXIDLE) {
@@ -395,7 +390,6 @@ void send_packet(uint8_t pkt[127]) {
 
 
 	// Send packet
-	volatile uint32_t *radio_state = &MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
 	
 	//uint8_t pkt[127] = datapacket;
 	MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&pkt[0];
@@ -411,17 +405,10 @@ void send_packet(uint8_t pkt[127]) {
 	//      | 1 << 19  /*rxready -> start*/
 	//      | 1 << 1   /*end -> disable*/
 	//    );
-	uint32_t last_state = *radio_state;
-	uint32_t states[30] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-	int i = 0;
-	states[i++] = last_state;
 
-	MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
 	MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
 	
   while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {} //wait for complete
- 
-
 }
 
 void send_ack()
@@ -1461,48 +1448,92 @@ void testforIdle()
 
 void idleCycle() //rewrite to a lower power state
 {
-  idleHeartbeatUnpressedTime = currentMillis;
-  Serial.println("idle");
-  while(!digitalRead(PIN_BUTTON)){
-    
-    currentMillis = millis();
-    
-    if ((currentMillis>configurationVariables.sleepingDelay + lastDebounceTime))
-    {
-      // to reduce power consumption when sleeping, turn off all your LEDs (and other power hungry devices)
-      digitalWrite(LED_RED, HIGH);
-      digitalWrite(LED_GREEN, HIGH);  
-      digitalWrite(LED_BLUE, HIGH);                       
-      set_radio_mode(OFF); //shut radio off
-      probe_mode_c = SLEEP;
+  // compute time to deep sleep, in units of heartbeats. All time tracking in this mode is in units of heartbeats, triggered on RTC0
+  int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
+
+  // turn off all high power peripherals
+  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_BLUE, HIGH);
+  set_radio_mode(OFF); //shut radio off
+
+  while (1) {
+    if (!digitalRead(PIN_BUTTON)) {
+      // probe triggered, exit idle mode
+      lastDebounceTime = millis();
+      probe_mode_c = PROBE;
       return;
-    } 
-    if ((currentMillis - idleHeartbeatUnpressedTime >configurationVariables.idleHeartbeatDelay)) {
-      //send heartbeat to machine
-      idleHeartbeatUnpressedTime = currentMillis;
-
-      vbatt = analogRead(PIN_VBAT); //convert to function later
-      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096; //2.961 for 12 bit. Exact value to be determined via voltage logging later. 
-      String out_str;
-      out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG)) ; 
-      Serial.println(out_str);
-      build_packet(0x00, vbatt & 0xff, vbatt >> 8);
-
-
-      Serial.println("idle heartbeat");
-      set_radio_mode(SEND);
-      build_packet(0x00, 0x99, 0x11);
-      send_packet(packet);
-      disable_radio();
     }
 
+    if (beatsUntilSleep <= 0) {
+      // time for deep sleep, no more heartbeats
+      probe_mode_c = SLEEP;
+      return;
+    }
 
+    if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
+      // send a heartbeat
+      vbatt = analogRead(PIN_VBAT); //convert to function later
+      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096; //2.961 for 12 bit. Exact value to be determined via voltage logging later. 
 
+      String out_str;
+      out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG)) ; 
+      volatile String foo = out_str;
+      Serial.println(out_str);
+
+      set_radio_mode(SEND);
+      build_packet(0x06, vbatt & 0xff, vbatt >> 8);
+      Serial.println("idle heartbeat");
+      send_packet(packet);
+      disable_radio();
+
+      // set up for next heartbeat
+      beatsUntilSleep--;
+      MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+      MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+    }
+    else {
+      // sleep until next button event or heart beat
+      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1; // disable RTC1 to prevent arduino tick functionality
+      __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS)); // set BASEPRI to mask RTC0 interrupt
+      MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16; // enable RTC0 interrput
+      __WFE();
+      MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16; // disable RTC0 interrupt
+      NVIC_ClearPendingIRQ(RTC0_IRQn); // clear RTC0 interrupt
+      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1; // re-enable RTC1
+    }
   }
-  lastDebounceTime = millis();
-  probe_mode_c = PROBE;
+}
 
-  
+void initHeartbeatTimer() {
+  // set up RTC0 to track when it's time for the next heartbeat message
+  // note: LF clock must already be running, but arduino sets this up for us
+
+  // compute RTC0 config variables
+  const int unscaledTicks = configurationVariables.idleHeartbeatDelay * 1e3 / RTC_TICK_US;
+  const int prescale = unscaledTicks / (RTC_COUNTER_MAX);
+  const int scaledTicks = unscaledTicks / (prescale + 1);
+
+  // stop and set config variables
+  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_STOP) = 1;
+  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+  MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+  MMIO(RTC0_BASE, RTC_OFFSET_PRESCALER) = prescale;
+  MMIO(RTC0_BASE, RTC_OFFSET_CC0) = scaledTicks;
+  MMIO(RTC0_BASE, RTC_OFFSET_EVTEN) = 1 << 16; // enable compare to CC0, disable others
+
+  // set interrupt priority to avoid actually triggering the interrupt handler
+  // (Arduino makes it very hard to define your own interrupt handlers, so instead
+  // we use a BASEPRIO high enough that the interrupt never fires, leverage the
+  // pending interrupt to trigger a wake from WFE, and simply clear the pending
+  // interrupt to allow it to trigger again)
+  NVIC_SetPriority(RTC0_IRQn, 7);
+  __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));
+  SCB->SCR |= SCB_SCR_SEVONPEND_Msk; // https://www.embedded.com/the-definitive-guide-to-arm-cortex-m0-m0-ultralow-power-designs
+  NVIC_EnableIRQ(RTC0_IRQn);
+
+  // start the RTC
+  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_START) = 1;
 }
 
 /////////////////////////////////tests///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1549,7 +1580,8 @@ void setup() {
   analogReference(AR_DEFAULT);        // default 0.6V*6=3.6V  wireing_analog_nRF52.c:73
   analogReadResolution(16);           // wireing_analog_nRF52.c:39
   
-  read_current_flash_vars();
+  //read_current_flash_vars();
+  initHeartbeatTimer();
   //filesystem setup
   set_radio_mode(SEND);
 
