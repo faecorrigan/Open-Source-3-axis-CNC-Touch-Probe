@@ -32,8 +32,6 @@
 #define PIN_WAKEUP 9
 #define PIN_BOOTJUMPER 23
 #define PIN_OTHERJUMPER 1
-#define PIN_LASER01 5  //current sink pin for laser
-#define PIN_LASER02 6  //current sink pin for laser
 
 #define BATTERYPOWERCONVERSIONRATIO 1000 * 0.1856 * 3.6  //at some point calibrate this value to voltage readings from probe
 
