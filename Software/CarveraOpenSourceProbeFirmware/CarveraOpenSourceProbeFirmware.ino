@@ -32,6 +32,8 @@
 #define PIN_WAKEUP 9
 #define PIN_BOOTJUMPER 23
 #define PIN_OTHERJUMPER 1
+#define PIN_LASER01 8  //current sink pin for laser
+#define PIN_LASER02 7  //current sink pin for laser
 
 #define BATTERYPOWERCONVERSIONRATIO 1000 * 0.1856 * 3.6  //at some point calibrate this value to voltage readings from probe
 
@@ -63,10 +65,11 @@ struct configurationVariablesStruct {
   unsigned long buttonHeartbeatUnpressed = 1000;  //how long between sending button released events in active probe mode
 
   //mode duration setup
-  unsigned long pairingDelay = 15000;       //how long to wait in pairing mode before quitting back to probe mode
+  unsigned long pairingDelay = 10000;       //how long to wait in pairing mode before quitting back to probe mode
+  unsigned long pairingLength = 20000;
   unsigned long laserDelay = 15000;         //how long to wait in laser mode before quitting back to probe mode
-  unsigned long idleDelay = 5000;//20000;          //how long to wait until the probe goes into idle mode
-  unsigned long sleepingDelay = 40000;  //1000000; //how long until the probe goes into a deep sleep mode
+  unsigned long idleDelay = 20000;           //20000;          //how long to wait until the probe goes into idle mode
+  unsigned long sleepingDelay = 40000;      //1000000; //how long until the probe goes into a deep sleep mode
   unsigned long idleHeartbeatDelay = 5000;  //how often to send heartbeat probe updates when in idle mode
 
   //communication configuration
@@ -93,7 +96,7 @@ unsigned long currentMillis = 0;
 // constants won't change:
 
 //button setup variables
-int button_state = LOW;           // the current reading from the input pin
+int button_state = LOW;     // the current reading from the input pin
 int lastButtonState = LOW;  // the previous reading from the input pin
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
@@ -623,7 +626,7 @@ void setup_blueart() {
   Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
 
   Bluefruit.begin();
-  Bluefruit.setTxPower(4);  // Check bluefruit.h for supported values
+  //Bluefruit.setTxPower(4);  // Check bluefruit.h for supported values
   //Bluefruit.setName(getMcuUniqueID()); // useful testing with multiple central connections
   Bluefruit.Periph.setConnectCallback(connect_callback);
   Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
@@ -1173,85 +1176,84 @@ void sendbutonpress(int state) {
     build_packet(0x01, vbatt & 0xff, vbatt >> 8);
     send_packet(packet);
 
-  } else {                         //todo add an option to send button not pressed over 802
-    digitalWrite(LED_RED, LOW);    // turn the LED off by making the voltage HIGH
+  } else {                          //todo add an option to send button not pressed over 802
+    digitalWrite(LED_RED, LOW);     // turn the LED off by making the voltage HIGH
     digitalWrite(LED_GREEN, HIGH);  // turn the LED on (LOW is the voltage level)
-    if (configurationVariables.send_unpressed_commands){
+    if (configurationVariables.send_unpressed_commands) {
       Serial.println("button released");
       build_packet(0x00, vbatt & 0xff, vbatt >> 8);
       send_packet(packet);
     }
-    
-    
   }
 }
 
 void probeCycle() {
-    currentMillis = millis();
-    int reading = digitalRead(PIN_BUTTON);
+  currentMillis = millis();
+  int reading = digitalRead(PIN_BUTTON);
 
-    // Normal button press handling logic starts here
-    if (reading == HIGH && button_state == LOW) {
-        lastDebounceTime = currentMillis;
+  // Normal button press handling logic starts here
+  if (reading == HIGH && button_state == LOW) {
+    lastDebounceTime = currentMillis;
+  }
+
+  // Button hold detection
+  if (reading == HIGH && button_state == HIGH) {
+    if ((currentMillis - lastDebounceTime) > configurationVariables.buttonLongPressLength) {
+      Serial.println("pairing");
+      probe_mode_c = PAIR;
+      button_held = true;
+      laserOn = false;  // Turn off laser when button is held
     }
+  }
 
-    // Button hold detection
-    if (reading == HIGH && button_state == HIGH) {
-        if ((currentMillis - lastDebounceTime) > configurationVariables.buttonLongPressLength) {
-            Serial.println("pairing");
-            probe_mode_c = PAIR;
-            button_held = true;
-            laserOn = false;  // Turn off laser when button is held
-        }
+  // Button release and double press detection
+  if (reading == LOW && button_state == HIGH) {
+    if ((currentMillis - lastDebounceTime) > configurationVariables.debounceDelay) {
+
+      // Handle double press detection
+      if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
+        laserOn = !laserOn;
+        Serial.println("double press");
+        button_held = false;
+      } else {
+        // First press is detected
+        single_press = true;
+        lastSwitchTime = currentMillis;  // Set the time for the first press
+      }
     }
-    
-    // Button release and double press detection
-    if (reading == LOW && button_state == HIGH) {
-        if ((currentMillis - lastDebounceTime) > configurationVariables.debounceDelay) {
-            
-            // Handle double press detection
-            if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
-                laserOn = !laserOn;
-                Serial.println("double press");
-                button_held = false;
-            } else {
-                // First press is detected
-                single_press = true;
-                lastSwitchTime = currentMillis;  // Set the time for the first press
-            }
+  }
 
-        }
+  button_state = reading;
+
+  // Send button press state
+  sendbutonpress(button_state);
+
+  // Laser cycle handling
+  if (laserOn) {
+    digitalWrite(PIN_LASER01,LOW); //turn on lasers
+    digitalWrite(PIN_LASER02,LOW);
+
+    Serial.println("Im a frickin laser. Pew pew");
+    if (currentMillis - blinkMillis >= 1000) {
+      blinkMillis = currentMillis;
+      blinkState = (blinkState == LOW) ? HIGH : LOW;
     }
-
-    button_state = reading;
-
-    // Send button press state
-    sendbutonpress(button_state);
-
-    // Laser cycle handling
-    if (laserOn) {
-        Serial.println("Im a frickin laser. Pew pew");
-        if (currentMillis - blinkMillis >= 1000) {
-            blinkMillis = currentMillis;
-            blinkState = (blinkState == LOW) ? HIGH : LOW;
-        }
-        if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay) {
-            laserOn = false;
-            blinkState = HIGH;
-        }
-        digitalWrite(LED_BLUE, blinkState);
-    } else {
-        digitalWrite(LED_BLUE, HIGH);
+    if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay) {
+      laserOn = false;
+      blinkState = HIGH;
     }
+    digitalWrite(LED_BLUE, blinkState);
+  } else {
+    digitalWrite(PIN_LASER01,HIGH); //turn off lasers
+    digitalWrite(PIN_LASER02,HIGH);
+    digitalWrite(LED_BLUE, HIGH);
+  }
 
-    delay(configurationVariables.pollingRate);
+  delay(configurationVariables.pollingRate);
 
-    // Check for idle state
-    testforIdle();
+  // Check for idle state
+  testforIdle();
 }
-
-
-
 
 void pairCycle() {
 
@@ -1259,7 +1261,7 @@ void pairCycle() {
   unsigned long pairing_prevMillis = currentMillis;
   int returnValue = 0;
 
-  if (currentMillis - lastDebounceTime > configurationVariables.pairingDelay) {
+  if (currentMillis - lastDebounceTime > configurationVariables.pairingLength) {
 
     lastDebounceTime = currentMillis;
     probe_mode_c = PROBE;
@@ -1399,49 +1401,52 @@ void offCycle() {
 
   Serial.println("off");
 
-    // turn off all high power peripherals
+// turn off all high power peripherals
   digitalWrite(LED_RED, HIGH);
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
-  set_radio_mode(OFF);  //shut radio off
+  set_radio_mode(OFF);  // shut radio off
 
-
-  Bluefruit.begin();
-  // setup your wake-up pins.
-  pinMode(PIN_BUTTON, INPUT_PULLUP_SENSE);  // this pin (WAKE_LOW_PIN) is pulled up and wakes up the feather when externally connected to ground.
-  //pinMode(PIN_BUTTON, INPUT_PULLDOWN_SENSE);  // this pin (WAKE_HIGH_PIN) is pulled down and wakes up the feather when externally connected to 3.3v.
-
-  // power down nrf52.
-  //MMIO(RTC0_BASE, RTC_OFFSET_TASKS_START) = 0;
-
-  sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
+  while (1) {
+    if (digitalRead(PIN_BUTTON) || probe_mode_c == PROBE) {
+      lastDebounceTime = millis();
+      set_radio_mode(SEND);
+      probe_mode_c = PROBE;
+      return;
+    }
+    // sleep until next button event
+    MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;  // Disable RTC1 to prevent Arduino tick functionality
+    // Attach button interrupt for falling edge (button press)
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
+    __WFE();  // Wait for event (CPU enters low-power state)
+    // Disable RTC0 interrupt after wake-up
+    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
+    MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;  // Re-enable RTC1
+  }
 }
 
 void testforIdle() {
 
   // shutdown when time reaches sleepingDelay ms
-  if ((currentMillis > configurationVariables.idleDelay + lastDebounceTime)) {
+  if ((currentMillis > configurationVariables.idleDelay + lastDebounceTime) && button_state == LOW && !laserOn) {
     Serial.println("going to sleep");
     probe_mode_c = IDLE;
   }
 }
 
-void idleCycle()  //rewrite to a lower power state
-{
-  // compute time to deep sleep, in units of heartbeats. All time tracking in this mode is in units of heartbeats, triggered on RTC0
+void idleCycle() {
   int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
-
 
   // turn off all high power peripherals
   digitalWrite(LED_RED, HIGH);
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
-  set_radio_mode(OFF);  //shut radio off
+  set_radio_mode(OFF);  // shut radio off
 
   while (1) {
-    if (digitalRead(PIN_BUTTON)) {
-      // probe triggered, exit idle mode
+    if (digitalRead(PIN_BUTTON) || probe_mode_c == PROBE) {
       lastDebounceTime = millis();
+      set_radio_mode(SEND);
       probe_mode_c = PROBE;
       return;
     }
@@ -1454,16 +1459,11 @@ void idleCycle()  //rewrite to a lower power state
 
     if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
       // send a heartbeat
-      vbatt = analogRead(PIN_VBAT);                        //convert to function later
-      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  //2.961 for 12 bit. Exact value to be determined via voltage logging later.
+      vbatt = analogRead(PIN_VBAT);  // convert to function later
+      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
 
-      String out_str;
-      out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG));
-      volatile String foo = out_str;
+      String out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG));
       Serial.println(out_str);
-
-
-
 
       set_radio_mode(SEND);
       build_packet(0x06, vbatt & 0xff, vbatt >> 8);
@@ -1476,17 +1476,30 @@ void idleCycle()  //rewrite to a lower power state
       MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
       MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
     } else {
-      // sleep until next button event or heart beat
-      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;      // disable RTC1 to prevent arduino tick functionality
-      __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));      // set BASEPRI to mask RTC0 interrupt
-      MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16;  // enable RTC0 interrput
-      __WFE();
-      MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16;  // disable RTC0 interrupt
-      NVIC_ClearPendingIRQ(RTC0_IRQn);                 // clear RTC0 interrupt
-      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;     // re-enable RTC1
+      // sleep until next button event or heartbeat
+      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;  // Disable RTC1 to prevent Arduino tick functionality
+      __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));  // Set BASEPRI to mask RTC0 interrupt
+      MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16;  // Enable RTC0 interrupt
+
+      // Attach button interrupt for falling edge (button press)
+      attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
+
+      __WFE();  // Wait for event (CPU enters low-power state)
+
+      // Disable RTC0 interrupt after wake-up
+      MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16;  // Disable RTC0 interrupt
+      NVIC_ClearPendingIRQ(RTC0_IRQn);  // Clear RTC0 interrupt pending flag
+      detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
+
+      MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;  // Re-enable RTC1
     }
   }
 }
+
+void GPIO_Handler() {
+  probe_mode_c = PROBE;
+}
+
 
 void initHeartbeatTimer() {
   // set up RTC0 to track when it's time for the next heartbeat message
@@ -1566,11 +1579,11 @@ void setup() {
   analogReadResolution(16);     // wireing_analog_nRF52.c:39
 
   //read_current_flash_vars();
-  //initHeartbeatTimer();
+  initHeartbeatTimer();
   //filesystem setup
   set_radio_mode(SEND);
   buttonHeartbeatUnpressedTime = currentMillis;
-  
+
 
 #ifdef ConstantPair
   probe_mode_c = PAIR;
