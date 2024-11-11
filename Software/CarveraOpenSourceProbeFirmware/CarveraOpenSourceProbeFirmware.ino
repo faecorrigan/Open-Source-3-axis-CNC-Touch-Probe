@@ -1189,111 +1189,71 @@ void sendbutonpress(int state) {
 }
 
 void probeCycle() {
+    currentMillis = millis();
+    int reading = digitalRead(PIN_BUTTON);
 
-
-  currentMillis = millis();
-
-  int reading = digitalRead(PIN_BUTTON);
-  // check to see if you just pressed the button
-  // (i.e. the input went from LOW to HIGH), and you've waited long enough
-  // since the last press to ignore any noise:
-
-
-  if (reading == HIGH && button_state == LOW) {
-
-    lastDebounceTime = currentMillis;  //onTime - lastDebounceTime
-  }
-
-  //held
-  if (reading == HIGH && button_state == HIGH) {
-
-    if ((currentMillis - lastDebounceTime) > configurationVariables.buttonLongPressLength) {
-
-      Serial.println("pairing");
-      probe_mode_c = PAIR;
-      button_held = true;
-      // shut the laser off
-      laserOn = false;
+    // Normal button press handling logic starts here
+    if (reading == HIGH && button_state == LOW) {
+        lastDebounceTime = currentMillis;
     }
-  }
 
-  //released
-  if (reading == LOW && button_state == HIGH) {
-
-    if ((currentMillis - lastDebounceTime) > configurationVariables.debounceDelay && !button_held) {
-
-      //button has been released test for double press
-      if ((currentMillis - lastSwitchTime) >= configurationVariables.buttonDoublePressTime) {
-        single_press = 1;
-        lastSwitchTime = currentMillis;
-
-      } else if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
-        laserOn = !laserOn;
-        Serial.println("double press");
-        single_press = false;
-        lastSwitchTime = currentMillis;
-      }
+    // Button hold detection
+    if (reading == HIGH && button_state == HIGH) {
+        if ((currentMillis - lastDebounceTime) > configurationVariables.buttonLongPressLength) {
+            Serial.println("pairing");
+            probe_mode_c = PAIR;
+            button_held = true;
+            laserOn = false;  // Turn off laser when button is held
+        }
     }
-  }
+    
+    // Button release and double press detection
+    if (reading == LOW && button_state == HIGH) {
+        if ((currentMillis - lastDebounceTime) > configurationVariables.debounceDelay) {
+            
+            // Handle double press detection
+            if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
+                laserOn = !laserOn;
+                Serial.println("double press");
+                button_held = false;
+            } else {
+                // First press is detected
+                single_press = true;
+                lastSwitchTime = currentMillis;  // Set the time for the first press
+            }
 
-  button_state = reading;
+        }
+    }
 
-  if ((single_press == true) && ((currentMillis - lastDebounceTime) > (configurationVariables.buttonDoublePressTime))) {
+    button_state = reading;
 
-    single_press = false;
-    Serial.println("single Press");
-  }
-
-
-  if (button_state == LOW && ((currentMillis - buttonHeartbeatUnpressedTime) < configurationVariables.buttonHeartbeatUnpressed)) {
-
-    //only send button presses as low on a certain interval
-    buttonHeartbeatUnpressedTime = currentMillis;
-
-  } else {
-
+    // Send button press state
     sendbutonpress(button_state);
 
-
-
-    //read battery
-  }
-
-  //laser cycle
-  if (laserOn) {
-
-    Serial.println("Im a frickin laser. Pew pew");
-
-
-    if (currentMillis - blinkMillis >= 1000) {
-      // save the last time you blinked the LED
-      blinkMillis = currentMillis;
-
-      // if the LED is off turn it on and vice-versa:
-      if (blinkState == LOW) {
-        blinkState = HIGH;
-      } else {
-        blinkState = LOW;
-      }
-    }
-    if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay) {
-
-      // shut the laser off
-      laserOn = false;
-      blinkState = HIGH;
+    // Laser cycle handling
+    if (laserOn) {
+        Serial.println("Im a frickin laser. Pew pew");
+        if (currentMillis - blinkMillis >= 1000) {
+            blinkMillis = currentMillis;
+            blinkState = (blinkState == LOW) ? HIGH : LOW;
+        }
+        if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay) {
+            laserOn = false;
+            blinkState = HIGH;
+        }
+        digitalWrite(LED_BLUE, blinkState);
+    } else {
+        digitalWrite(LED_BLUE, HIGH);
     }
 
-    digitalWrite(LED_BLUE, blinkState);
-  } else {
-    digitalWrite(LED_BLUE, HIGH);
-  }
+    delay(configurationVariables.pollingRate);
 
-  delay(configurationVariables.pollingRate);
-
-
-  //test for idle
-  testforIdle();
+    // Check for idle state
+    testforIdle();
 }
+
+
+
 
 void pairCycle() {
 
@@ -1440,14 +1400,22 @@ void updateCycle() {
 void offCycle() {
 
   Serial.println("off");
+
+    // turn off all high power peripherals
+  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_GREEN, HIGH);
+  digitalWrite(LED_BLUE, HIGH);
+  set_radio_mode(OFF);  //shut radio off
+
+
   Bluefruit.begin();
   // setup your wake-up pins.
   pinMode(PIN_BUTTON, INPUT_PULLUP_SENSE);  // this pin (WAKE_LOW_PIN) is pulled up and wakes up the feather when externally connected to ground.
   //pinMode(PIN_BUTTON, INPUT_PULLDOWN_SENSE);  // this pin (WAKE_HIGH_PIN) is pulled down and wakes up the feather when externally connected to 3.3v.
 
   // power down nrf52.
-  // shutdown the RTC
-  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_START) = 0;
+  //MMIO(RTC0_BASE, RTC_OFFSET_TASKS_START) = 0;
+
   sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
 }
 
@@ -1600,9 +1568,11 @@ void setup() {
   analogReadResolution(16);     // wireing_analog_nRF52.c:39
 
   //read_current_flash_vars();
-  initHeartbeatTimer();
+  //initHeartbeatTimer();
   //filesystem setup
   set_radio_mode(SEND);
+  buttonHeartbeatUnpressedTime = currentMillis;
+  
 
 #ifdef ConstantPair
   probe_mode_c = PAIR;
