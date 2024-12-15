@@ -37,6 +37,42 @@
 
 #define BATTERYPOWERCONVERSIONRATIO 1000 * 0.1856 * 3.6  //at some point calibrate this value to voltage readings from probe
 
+// pin overrides, for David's setup. Shouldn't affect anything without command
+// line parameters to define OVERRIDE_* variables
+#ifdef OVERRIDE_LED_RED
+#undef LED_RED
+#define LED_RED OVERRIDE_LED_RED
+#endif
+
+#ifdef OVERRIDE_LED_GREEN
+#undef LED_GREEN
+#define LED_GREEN OVERRIDE_LED_GREEN
+#endif
+
+#ifdef OVERRIDE_LED_BLUE
+#undef LED_BLUE
+#define LED_BLUE OVERRIDE_LED_BLUE
+#endif
+
+#ifdef OVERRIDE_PIN_VBAT_ENABLE
+#undef PIN_VBAT_ENABLE
+#define PIN_VBAT_ENABLE OVERRIDE_PIN_VBAT_ENABLE
+#endif
+
+#ifdef OVERRIDE_PIN_BUTTON
+#undef PIN_BUTTON
+#define PIN_BUTTON OVERRIDE_PIN_BUTTON
+#endif
+
+#ifdef OVERRIDE_PIN_WAKEUP
+#undef PIN_WAKEUP
+#define PIN_WAKEUP OVERRIDE_PIN_WAKEUP
+#endif
+
+#ifdef OVERRIDE_PIN_HICHG
+#undef PIN_HICHG
+#define PIN_HICHG OVERRIDE_PIN_HICHG
+#endif
 
 enum ProbeMode { UNDEF,
                  INIT,
