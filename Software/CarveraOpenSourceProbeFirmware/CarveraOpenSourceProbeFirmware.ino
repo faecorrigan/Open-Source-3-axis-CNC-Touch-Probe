@@ -1302,28 +1302,16 @@ void offCycle() {
 
   Serial.println("off");
 
-// turn off all high power peripherals
+  // turn off all high power peripherals
   digitalWrite(LED_RED, HIGH);
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
   set_radio_mode(OFF);  // shut radio off
 
-  while (1) {
-    if (digitalRead(PIN_BUTTON) || probe_mode_c == PROBE) {
-      lastDebounceTime = millis();
-      set_radio_mode(SEND);
-      probe_mode_c = PROBE;
-      return;
-    }
-    // sleep until next button event
-    MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;  // Disable RTC1 to prevent Arduino tick functionality
-    // Attach button interrupt for falling edge (button press)
-    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
-    __WFE();  // Wait for event (CPU enters low-power state)
-    // Disable RTC0 interrupt after wake-up
-    detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
-    MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;  // Re-enable RTC1
-  }
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
+  sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
+  while (1) { } // only relevant for operation under debuggers; this code is unreachable if we actually enter system off mode
+  detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
 }
 
 void testforIdle() {
