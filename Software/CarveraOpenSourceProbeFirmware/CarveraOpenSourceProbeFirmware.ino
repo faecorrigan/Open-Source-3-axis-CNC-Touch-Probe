@@ -1318,10 +1318,14 @@ void offCycle() {
   digitalWrite(LED_BLUE, HIGH);
   set_radio_mode(OFF);  // shut radio off
 
-  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
   sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
-  while (1) { } // only relevant for operation under debuggers; this code is unreachable if we actually enter system off mode
-  detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
+
+  // This is unreachable except for operation under debuggers; in normal execution the
+  // chip is now in deep sleep, and execution will begin again on wake (gpio button)
+  // from the top with a full reset
+  //
+  // in debuggers, code execution may continue here under emulated system off mode,
+  // and will loop
 }
 
 void testforIdle() {
@@ -1380,15 +1384,11 @@ void idleCycle() {
       __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));  // Set BASEPRI to mask RTC0 interrupt
       MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16;  // Enable RTC0 interrupt
 
-      // Attach button interrupt for falling edge (button press)
-      attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
-
       __WFE();  // Wait for event (CPU enters low-power state)
 
       // Disable RTC0 interrupt after wake-up
       MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16;  // Disable RTC0 interrupt
       NVIC_ClearPendingIRQ(RTC0_IRQn);  // Clear RTC0 interrupt pending flag
-      detachInterrupt(digitalPinToInterrupt(PIN_BUTTON));  // Detach button interrupt
 
       MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;  // Re-enable RTC1
     }
@@ -1396,7 +1396,10 @@ void idleCycle() {
 }
 
 void GPIO_Handler() {
-  probe_mode_c = PROBE;
+  if (probe_mode_c == SLEEP || probe_mode_c == IDLE) {
+    // wake up
+    probe_mode_c = PROBE;
+  }
 }
 
 
@@ -1451,7 +1454,8 @@ void setup() {
   //initialize digital pin for button as Input
   pinMode(PIN_BUTTON, INPUT_PULLUP);
 
-
+  // Attach button interrupt for falling edge (button press)
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
 
 #ifdef SerialDebug
   Serial.begin(115200);
