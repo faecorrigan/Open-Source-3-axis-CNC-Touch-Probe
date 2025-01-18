@@ -133,9 +133,8 @@ configurationVariablesStruct configurationVariables;
 
 
 //communication setup
-uint8_t packet[127] = PACKET_PAIR;
-uint8_t seq = 1;
-uint8_t ack_pkt[127] = { 0x05, 0x02, 0x00, 0x02 };
+uint8_t receivePkt[128] = {0x00};
+uint8_t seq = 0;
 //pairing wait
 unsigned long previousMillis = 0;  // will store last time LED was updated need to consolodate with primary wait times
 unsigned long currentMillis = 0;
@@ -382,7 +381,10 @@ void setup_radio_TXRX()  // all the one time setup for the 802.15.4 radio
   // MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
 }
 
-void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batteryA = 0x10, bool reset_seq = false) {
+uint8_t batteryLow = 0;
+uint8_t batteryHigh = 0;
+void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = false) {
+  uint8_t packet[15] = {};
 
   if (reset_seq) {
     seq = 0x00;
@@ -398,27 +400,33 @@ void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batter
   packet[4] = configurationVariables.pan[0];
   packet[5] = configurationVariables.pan[1];
   //destination
-  packet[6] = configurationVariables.destination[0];
-  packet[7] = configurationVariables.destination[1];
+  if (cmd == 3) {
+    // destination is broadcast address instead of paired address
+    packet[6] = 0xff;
+    packet[7] = 0xff;
+  } else {
+    packet[6] = configurationVariables.destination[0];
+    packet[7] = configurationVariables.destination[1];
+  }
   //source
   packet[8] = configurationVariables.source[0];
   packet[9] = configurationVariables.source[1];
   //data payload
-  if (status == 3) {
-    packet[10] = status;
-    //destination
-    packet[6] = 0xff;
-    packet[7] = 0xff;
-
-  } else {
-    packet[10] = status;
-  }
+  packet[10] = cmd;
   //battery status
-  packet[11] = batteryB;
-  packet[12] = batteryA;
+  if (read_battery) {
+    vbatt = analogRead(PIN_VBAT);  // convert to function later
+    vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
+    batteryLow = vbatt & 0xff;
+    batteryHigh = vbatt >> 8;
+  }
+  packet[11] = batteryLow;
+  packet[12] = batteryHigh;
+
+  _send_packet(packet);
 }
 
-void send_packet(uint8_t pkt[127]) {
+void _send_packet(uint8_t pkt[127]) {
   // turn on radio, if necessary
   if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
     set_radio_mode(SEND);
@@ -439,7 +447,9 @@ void send_packet(uint8_t pkt[127]) {
 }
 
 void send_ack() {
-  send_packet(ack_pkt);
+  uint8_t ack_pkt[6] = { 0x05, 0x02, 0x00 };
+  ack_pkt[3] = receivePkt[3];
+  _send_packet(ack_pkt);
 }
 
 
@@ -462,11 +472,10 @@ int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, 
   while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) { }
 
   // Receive packet
-  uint8_t pkt[127];
-  for (int i = 0; i < 127; i++) {
-    pkt[i] = 0xcc;
+  for (int i = 0; i < 128; i++) {
+    receivePkt[i] = 0xcc;
   }
-  MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&pkt[0];
+  MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&receivePkt[0];
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) = 0;
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCERROR) = 0;
@@ -482,43 +491,36 @@ int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, 
 
   //ack
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
-    if (pkt[0] == 0x5) {                              //} && pkt[4]==0x22 && pkt[5]==0x20) {
-      //Serial.print(seq);
-      //Serial.print(pkt[3]);
-      if (pkt[3] = seq) {
-
+    if (receivePkt[0] == 0x5) {
+      if (receivePkt[3] == seq - 1) {
         Serial.println("ack confirmed");
         return 2;
+      } else {
+        Serial.print("ack for unknown packet: ");
+        Serial.print(receivePkt[3]);
+        Serial.print(" (next seq = ");
+        Serial.print(seq);
+        Serial.println(")");
       }
     }
   }
 
   //packet
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
-    if (pkt[0] == 0xe && pkt[4] == 0x22 && pkt[5] == 0x20) {
+    if (receivePkt[0] == 0xe && receivePkt[4] == 0x22 && receivePkt[5] == 0x20) {
       // length, PAN ok
       Serial.print(" length pan ok ");
-      //Serial.print(pkt[10]);
-      ack_pkt[3] = pkt[3];
-
-      if (pkt[10] == 0x03) {
+      //Serial.print(receivePkt[10]);
+      if (receivePkt[10] == 0x03) {
         Serial.println(" confirm packet ");
-        configurationVariables.source[0] = pkt[11];
-        configurationVariables.source[1] = pkt[12];
-        configurationVariables.destination[0] = pkt[11];
-        configurationVariables.destination[1] = pkt[12];
+        configurationVariables.source[0] = receivePkt[11];
+        configurationVariables.source[1] = receivePkt[12];
+        configurationVariables.destination[0] = receivePkt[11];
+        configurationVariables.destination[1] = receivePkt[12];
         return 1;
       }
     }
   }
-  /* print any other packets that the device receives
-  for (int j = 0; j<pkt[0]; j++){
-    ack_pkt[j] = pkt[j];
-    Serial.print(" ");
-    Serial.print(ack_pkt[j]);
-  }
-  Serial.println();
-  */
   return 0;
 }
 
@@ -1072,28 +1074,19 @@ void blueart_parseInput() {
 ///////////////////////core////////////////////////////
 
 void sendbutonpress(int state) {
-
-  vbatt = analogRead(PIN_VBAT);
-  vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;
-  String out_str;
-  out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG));  //2.961 for 12 bit
-  //Serial.println(out_str);
-
   set_radio_mode(SEND);
   if (state) {
     digitalWrite(LED_RED, HIGH);
     digitalWrite(LED_GREEN, LOW);
     Serial.println("button pressed");
-    build_packet(0x01, vbatt & 0xff, vbatt >> 8);
-    send_packet(packet);
+    send_packet(0x01);
 
   } else {                          //todo add an option to send button not pressed over 802
     digitalWrite(LED_RED, LOW);     // turn the LED off by making the voltage HIGH
     digitalWrite(LED_GREEN, HIGH);  // turn the LED on (LOW is the voltage level)
     if (configurationVariables.send_unpressed_commands) {
       Serial.println("button released");
-      build_packet(0x00, vbatt & 0xff, vbatt >> 8);
-      send_packet(packet);
+      send_packet(0x00);
     }
   }
 }
@@ -1205,8 +1198,7 @@ void pairCycle() {
       return;
     }
     set_radio_mode(SEND);
-    build_packet(0x03, 0xea, 0x0b);
-    send_packet(packet);
+    send_packet(0x03);
     set_radio_mode(RECEIVE);
     currentMillis = millis();
   }
@@ -1227,8 +1219,7 @@ void pairCycle() {
 
 
 
-  build_packet(0x06, 0xea, 0x0b, true);
-  send_packet(packet);
+  send_packet(0x06);
   set_radio_mode(RECEIVE);
   //send final packet
   returnValue = receive_packet();
@@ -1244,8 +1235,7 @@ void pairCycle() {
       return;
     }
     set_radio_mode(SEND);
-    build_packet(0x06, 0xea, 0x0b, true);  //send confirm packet to machine
-    send_packet(packet);
+    send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);  //send confirm packet to machine
     currentMillis = millis();
     set_radio_mode(RECEIVE);
 
@@ -1366,16 +1356,9 @@ void idleCycle() {
 
     if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
       // send a heartbeat
-      vbatt = analogRead(PIN_VBAT);  // convert to function later
-      vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
-
-      String out_str = String(vbatt, HEX) + "    " + String(vbatt) + "    " + String(digitalRead(PIN_CHG));
-      Serial.println(out_str);
-
       set_radio_mode(SEND);
-      build_packet(0x06, vbatt & 0xff, vbatt >> 8);
       Serial.println("idle heartbeat");
-      send_packet(packet);
+      send_packet(0x06);
       disable_radio();
 
       // set up for next heartbeat
