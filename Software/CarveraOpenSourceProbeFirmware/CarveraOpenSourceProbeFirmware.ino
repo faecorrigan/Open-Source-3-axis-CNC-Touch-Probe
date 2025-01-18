@@ -1447,9 +1447,11 @@ void setup() {
 
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_RED, OUTPUT);
-
   pinMode(LED_BLUE, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
+
+  pinMode(PIN_LASER01, OUTPUT);
+  pinMode(PIN_LASER02, OUTPUT);
 
   //initialize digital pin for button as Input
   pinMode(PIN_BUTTON, INPUT_PULLUP);
