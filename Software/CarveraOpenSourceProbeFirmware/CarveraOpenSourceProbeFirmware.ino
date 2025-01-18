@@ -1313,10 +1313,12 @@ void offCycle() {
   Serial.println("off");
 
   // turn off all high power peripherals
-  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_RED, HIGH); // turn off LEDs
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
-  set_radio_mode(OFF);  // shut radio off
+  digitalWrite(PIN_LASER01,HIGH); // turn off lasers
+  digitalWrite(PIN_LASER02,HIGH);
+  set_radio_mode(OFF);  // turn off radio and HF clock
 
   sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
 
@@ -1341,10 +1343,12 @@ void idleCycle() {
   int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
 
   // turn off all high power peripherals
-  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_RED, HIGH); // turn off LEDs
   digitalWrite(LED_GREEN, HIGH);
   digitalWrite(LED_BLUE, HIGH);
-  set_radio_mode(OFF);  // shut radio off
+  digitalWrite(PIN_LASER01,HIGH); // turn off lasers
+  digitalWrite(PIN_LASER02,HIGH);
+  set_radio_mode(OFF);  // turn off radio and HF clock
 
   while (1) {
     if (digitalRead(PIN_BUTTON) || probe_mode_c == PROBE) {
