@@ -74,6 +74,16 @@
 #define PIN_HICHG OVERRIDE_PIN_HICHG
 #endif
 
+#ifdef OVERRIDE_PIN_VBAT
+#undef PIN_VBAT
+#define PIN_VBAT OVERRIDE_PIN_VBAT
+#endif
+
+#ifdef OVERRIDE_PIN_LASER01
+#undef PIN_LASER01
+#define PIN_LASER01 OVERRIDE_PIN_LASER01
+#endif
+
 enum ProbeMode { UNDEF,
                  INIT,
                  IDLE,
