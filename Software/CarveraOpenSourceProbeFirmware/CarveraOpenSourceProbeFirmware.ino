@@ -1217,34 +1217,8 @@ void pairCycle() {
   set_radio_mode(SEND);
   send_ack();
 
-
-
-  send_packet(0x06);
-  set_radio_mode(RECEIVE);
-  //send final packet
-  returnValue = receive_packet();
-  while (returnValue != 2) {
-
-    if (returnValue == 1) {
-
-      send_ack();
-    }
-    if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
-    {
-      Serial.println("pairing timout: confirm packet");
-      return;
-    }
-    set_radio_mode(SEND);
-    send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);  //send confirm packet to machine
-    currentMillis = millis();
-    set_radio_mode(RECEIVE);
-
-
-
-    returnValue = receive_packet();
-  }
-  set_radio_mode(SEND);
-  send_ack();
+  // Reset sequence number; send status packet
+  send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);
   Serial.println("Pairing success");
   probe_mode_c = PROBE;
 }
