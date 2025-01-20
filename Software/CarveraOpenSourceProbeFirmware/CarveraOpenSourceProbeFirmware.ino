@@ -49,7 +49,7 @@ enum ProbeMode { UNDEF,
                  TEST };  //laser mode is wrapped inside pairing mode.
 enum RadioMode { OFF,
                  SEND,
-                 RECIEVE };
+                 RECEIVE };
 
 ProbeMode probe_mode_c = PROBE;
 
@@ -257,53 +257,37 @@ void report_current_flash_vars_bleuart() {
 
 
 void disable_radio() {
-
-  //NRF_RADIO->SHORTS = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1;  //
-
-
-
-
-
-
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {
-    // Do nothing.
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER)) {
+    MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1;
+    while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
   }
-
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;
 }
 
 void set_radio_mode(RadioMode radio_mode) {
 
   disable_radio();
   switch (radio_mode) {
-
     case OFF:
-      MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;             //turn off events on the radio. 0 is off, 1 allows events
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1;               //
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {}  // wait to complete
+      // turn off the radio, to conserve battery
+      MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 0;
+
+      // also turn off the high frequency clock, which is only needed for the radio, to save battery
+      MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTOP) = 1;
       break;
 
     case SEND:
-
-      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel * 5 - 50;
-      MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0;             //turn off events on the radio. 0 is off, 1 allows events
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1;               // turn off tasks
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {}  // wait to complete
+      MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1; // turn on radio
       setup_radio_TXRX();
+      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel * 5 - 50;
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
       while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_READY) == 0) {}  // wait to complete
       break;
 
-    case RECIEVE:
-
-      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channelRx * 5 - 50;
-      //MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) = 0; //turn off events on the radio. 0 is off, 1 allows events
-      //MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_DISABLE) = 1; // turn off tasks
-      //while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_DISABLED) == 0) {} // wait to complete
+    case RECEIVE:
+      MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1; // turn on radio
       setup_radio_TXRX();
+      MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channelRx * 5 - 50;
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
       while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_READY) == 0) {}  // wait to complete
       break;
@@ -389,159 +373,49 @@ void build_packet(uint8_t status = 0x01, uint8_t batteryB = 0x4c, uint8_t batter
 }
 
 void send_packet(uint8_t pkt[127]) {
-  // block waiting for a stable radio state
-  uint32_t state = -1;
-
-
-  // if the state is not rx idle, perform rx ramp up and wait
-  if (state == RADIO_STATE_RXIDLE) {
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+  // turn on radio, if necessary
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
+    set_radio_mode(SEND);
   }
-  state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  if (state != RADIO_STATE_TXIDLE) {
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 0;
+
+  // ensure state TXIDLE
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {
     MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
   }
-  while (state != RADIO_STATE_TXIDLE) {
-    state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  }
-
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) { }
 
   // Send packet
-  volatile uint32_t *radio_state = &MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-
-  //uint8_t pkt[127] = datapacket;
   MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&pkt[0];
-  //MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = (0
-  // //| 1 << 1  /*end -> disable */
-  // | 1 << 11 /*rxready -> cca start*/
-  // | 1 << 12 /*cca idle -> txen*/
-  // | 1 << LED_GREEN /*cca_busy -> disable*/
-  // //| 1 << 17 /*cca idle -> stop*/
-  // | 1 << 18 /*txready -> start*/
-  // );
-  //MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = (0
-  //      | 1 << 19  /*rxready -> start*/
-  //      | 1 << 1   /*end -> disable*/
-  //    );
-  uint32_t last_state = *radio_state;
-  uint32_t states[30] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-  int i = 0;
-  states[i++] = last_state;
-
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
   MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
 
-
-
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {}  //wait for complete
+  //wait for complete
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {}
 }
 
 void send_ack() {
-
-  // block waiting for a stable radio state
-  uint32_t state = -1;
-
-
-  // if the state is not rx idle, perform rx ramp up and wait
-  if (state == RADIO_STATE_RXIDLE) {
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
-  }
-  state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  if (state != RADIO_STATE_TXIDLE) {
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 0;
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
-  }
-  while (state != RADIO_STATE_TXIDLE) {
-    state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  }
-
-
-  // Send packet
-  volatile uint32_t *radio_state = &MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-
-
-
-
-  //uint8_t pkt[127] = datapacket;
-  MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&ack_pkt[0];
-  //MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = (0
-  // //| 1 << 1  /*end -> disable */
-  // | 1 << 11 /*rxready -> cca start*/
-  // | 1 << 12 /*cca idle -> txen*/
-  // | 1 << LED_GREEN /*cca_busy -> disable*/
-  // //| 1 << 17 /*cca idle -> stop*/
-  // | 1 << 18 /*txready -> start*/
-  // );
-  //MMIO(RADIO_BASE, RADIO_OFFSET_SHORTS) = (0
-  //      | 1 << 19  /*rxready -> start*/
-  //      | 1 << 1   /*end -> disable*/
-  //    );
-  uint32_t last_state = *radio_state;
-  uint32_t states[30] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-  int i = 0;
-  states[i++] = last_state;
-
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
-
-
-
-
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {}  //wait for complete
+  send_packet(ack_pkt);
 }
 
 
-int recieve_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
-  // radio power on
-  MMIO(RADIO_BASE, RADIO_OFFSET_POWER) = 1;
-
-  // hf clock on
-  MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0;         // clear event
-  MMIO(CLOCK_BASE, CLOCK_OFFSET_TASKS_HFCLKSTART) = 1;            // enable
-  while (!MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED)) {}  // wait for event
-  MMIO(CLOCK_BASE, CLOCK_OFFSET_EVENTS_HFCLKSTARTED) = 0;         // clear event
-
-  // misc radio configuration
-  MMIO(RADIO_BASE, RADIO_OFFSET_CRCCNF) = 0x202;
-  MMIO(RADIO_BASE, RADIO_OFFSET_CRCPOLY) = 0x11021;
-  MMIO(RADIO_BASE, RADIO_OFFSET_CRCINIT) = 0;
-
-  //MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x052D0000 | 2; // default thresholds; require energy level and carrier pattern to detect busy
-  MMIO(RADIO_BASE, RADIO_OFFSET_CCACTRL) = 0x022D2D00;  // default thresholds; require energy level and carrier pattern to detect busy
-
-  MMIO(RADIO_BASE, RADIO_OFFSET_MODE) = 15;  // ieee 802.15.4
-  MMIO(RADIO_BASE, RADIO_OFFSET_PCNF0) = 8 | (2 << 24) | (1 << 26);
-  MMIO(RADIO_BASE, RADIO_OFFSET_PCNF1) = 127;
-  // MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
-
-  // block waiting for a stable radio state
-  uint32_t state = -1;
-  while (state != RADIO_STATE_DISABLED && state != RADIO_STATE_RXIDLE && state != RADIO_STATE_TXIDLE && state != RADIO_STATE_RX) {
-    //Serial.print("state trap 01");
-
-    state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
+int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
+  // turn on radio, if necessary
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
+    set_radio_mode(RECEIVE);
   }
 
-  // if the state is not rx idle, perform rx ramp up and wait
-  if (state == RADIO_STATE_RX) {
-
-
-
-
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+  // ensure state RXIDLE
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) {
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) == RADIO_STATE_RX) {
+      // cancel the current rx command, return to rxidle
+      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+    } else {
+      // rx rampup from disabled or tx
+      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
+    }
   }
-  state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  if (state != RADIO_STATE_RXIDLE) {
-    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
-  }
-  while (state != RADIO_STATE_RXIDLE) {
-    //Serial.print("state trap 02");
-    state = MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
-  }
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) { }
 
   // Receive packet
-  volatile uint32_t *radio_state = &MMIO(RADIO_BASE, RADIO_OFFSET_STATE);
   uint8_t pkt[127];
   for (int i = 0; i < 127; i++) {
     pkt[i] = 0xcc;
@@ -551,23 +425,14 @@ int recieve_packet() {  //return 0 for no packet, return 1 for a proper packet, 
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCERROR) = 0;
 
-  uint32_t last_state = *radio_state;
-  uint32_t states[30] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-  int i = 0;
-  states[i++] = last_state;
-  i = i % 30;
   MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
   previousMillis = millis();
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) == 0) {  //wait until it recieves something
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) == 0) {  //wait until it receives something
     currentMillis = millis();
     if (currentMillis - previousMillis >= configurationVariables.ackInterval) {  //escape loop if taking too long
       return 0;
     }
   }
-
-
-
-
 
   //ack
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
@@ -600,7 +465,7 @@ int recieve_packet() {  //return 0 for no packet, return 1 for a proper packet, 
       }
     }
   }
-  /* print any other packets that the device recieves
+  /* print any other packets that the device receives
   for (int j = 0; j<pkt[0]; j++){
     ack_pkt[j] = pkt[j];
     Serial.print(" ");
@@ -713,7 +578,7 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason) {
   Serial.print("Disconnected, reason = 0x");
   Serial.println(reason, HEX);
 }
-void recieve_blueart() {
+void receive_blueart() {
 
   static boolean recvInProgress = false;
   static byte ndx = 0;
@@ -1078,7 +943,7 @@ void blueart_parseInput() {
 
   if (strcmp(blueart_returnCommand, "exit") == 0)  // hangs somewhere when reenabling 802 radio
   {
-    bleuart.print("recieved command: exit");
+    bleuart.print("received command: exit");
     //shut down blueart
     blueart_stop();
     //switch to probe mode //things fail here
@@ -1094,17 +959,17 @@ void blueart_parseInput() {
 
   } else if (strcmp(blueart_returnCommand, "set") == 0) {
 
-    bleuart.print("recieved command: set");
+    bleuart.print("received command: set");
     blueart_set();
 
   } else if (strcmp(blueart_returnCommand, "report") == 0) {
 
-    bleuart.print("recieved command: report");
+    bleuart.print("received command: report");
     blueart_get(true);
 
   } else if (strcmp(blueart_returnCommand, "save") == 0)  // fails to restart BLE UART service on return
   {
-    bleuart.print("recieved command: save");
+    bleuart.print("received command: save");
 
     blueart_stop();
     write_current_flash_vars();
@@ -1115,7 +980,7 @@ void blueart_parseInput() {
 
   } else if (strcmp(blueart_returnCommand, "erase") == 0)  // fails to restart BLE UART service on return
   {
-    bleuart.print("recieved command: erase");
+    bleuart.print("received command: erase");
 
     blueart_stop();
     eraseFlashPage(flashConfig, true);
@@ -1126,26 +991,26 @@ void blueart_parseInput() {
 
   } else if (strcmp(blueart_returnCommand, "clear") == 0) {
 
-    bleuart.print("recieved command: clear");
+    bleuart.print("received command: clear");
     read_current_flash_vars();
     blueart_get(true);
 
   } else if (strcmp(blueart_returnCommand, "help") == 0)  // need to do a writeup of all commands and vars. Proably use report to get var names.
   {
-    bleuart.print("recieved command: help");
+    bleuart.print("received command: help");
 
   } else if (strcmp(blueart_returnCommand, "info") == 0)  // need to report serial number, firmware version, etc.
   {
-    bleuart.print("recieved command: info");
+    bleuart.print("received command: info");
 
   } else if (strcmp(blueart_returnCommand, "readFlash") == 0) {
 
-    bleuart.print("recieved command: readFlash");
+    bleuart.print("received command: readFlash");
     report_current_flash_vars_bleuart();
 
   } else if (strcmp(blueart_returnCommand, "test") == 0)  // hangs somewhere when reenabling 802 radio
   {
-    bleuart.print("recieved command: test.");
+    bleuart.print("received command: test.");
     //shut down blueart
     blueart_stop();
     //switch mode //things fail here
@@ -1285,8 +1150,8 @@ void pairCycle() {
 
   Serial.println("starting Pairing");
   //send pairing packet 1
-  set_radio_mode(RECIEVE);
-  while (recieve_packet() != 2) {
+  set_radio_mode(RECEIVE);
+  while (receive_packet() != 2) {
 
     if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
     {
@@ -1296,12 +1161,12 @@ void pairCycle() {
     set_radio_mode(SEND);
     build_packet(0x03, 0xea, 0x0b);
     send_packet(packet);
-    set_radio_mode(RECIEVE);
+    set_radio_mode(RECEIVE);
     currentMillis = millis();
   }
   //Serial.println("first packet confirmed, waiting for packet from machine");
   //wait for response packet
-  while (recieve_packet() != 1) {
+  while (receive_packet() != 1) {
 
     currentMillis = millis();
     if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
@@ -1310,7 +1175,7 @@ void pairCycle() {
       return;
     }
   }
-  Serial.print("recieved machine packet, sending second confirm");
+  Serial.print("received machine packet, sending second confirm");
   set_radio_mode(SEND);
   send_ack();
 
@@ -1318,9 +1183,9 @@ void pairCycle() {
 
   build_packet(0x06, 0xea, 0x0b, true);
   send_packet(packet);
-  set_radio_mode(RECIEVE);
+  set_radio_mode(RECEIVE);
   //send final packet
-  returnValue = recieve_packet();
+  returnValue = receive_packet();
   while (returnValue != 2) {
 
     if (returnValue == 1) {
@@ -1336,11 +1201,11 @@ void pairCycle() {
     build_packet(0x06, 0xea, 0x0b, true);  //send confirm packet to machine
     send_packet(packet);
     currentMillis = millis();
-    set_radio_mode(RECIEVE);
+    set_radio_mode(RECEIVE);
 
 
 
-    returnValue = recieve_packet();
+    returnValue = receive_packet();
   }
   set_radio_mode(SEND);
   send_ack();
@@ -1393,7 +1258,7 @@ void updateCycle() {
     }
 
     // Forward from BLEUART to HW Serial
-    recieve_blueart();
+    receive_blueart();
   }
 }
 
