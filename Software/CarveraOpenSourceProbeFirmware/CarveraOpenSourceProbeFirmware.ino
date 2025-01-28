@@ -1345,6 +1345,7 @@ void idleCycle() {
     } else {
       // sleep until next button event or heartbeat
       MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;  // Disable RTC1 to prevent Arduino tick functionality
+      const auto oldBasepri = __get_BASEPRI();
       __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));  // Set BASEPRI to mask RTC0 interrupt
       MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16;  // Enable RTC0 interrupt
 
@@ -1353,6 +1354,7 @@ void idleCycle() {
       // Disable RTC0 interrupt after wake-up
       MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16;  // Disable RTC0 interrupt
       NVIC_ClearPendingIRQ(RTC0_IRQn);  // Clear RTC0 interrupt pending flag
+      __set_BASEPRI(oldBasepri);  // Restore BASEPRI
 
       MMIO(RTC1_BASE, RTC_OFFSET_TASKS_START) = 1;  // Re-enable RTC1
     }
@@ -1390,7 +1392,7 @@ void initHeartbeatTimer() {
   // pending interrupt to trigger a wake from WFE, and simply clear the pending
   // interrupt to allow it to trigger again)
   NVIC_SetPriority(RTC0_IRQn, 7);
-  __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));
+  //__set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS)); // only do this when sleeping
   SCB->SCR |= SCB_SCR_SEVONPEND_Msk;  // https://www.embedded.com/the-definitive-guide-to-arm-cortex-m0-m0-ultralow-power-designs
   NVIC_EnableIRQ(RTC0_IRQn);
 
