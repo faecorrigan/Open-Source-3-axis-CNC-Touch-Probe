@@ -115,7 +115,7 @@ struct configurationVariablesStruct {
   unsigned long pairingLength = 20000;
   unsigned long laserDelay = 15000;         //how long to wait in laser mode before quitting back to probe mode
   unsigned long idleDelay = 20000;           //20000;          //how long to wait until the probe goes into idle mode
-  unsigned long sleepingDelay = 40000;      //1000000; //how long until the probe goes into a deep sleep mode
+  unsigned long sleepingDelay = 10000;      //1000000; //how long until the probe goes into a deep sleep mode
   unsigned long idleHeartbeatDelay = 5000;  //how often to send heartbeat probe updates when in idle mode
 
   //communication configuration
@@ -146,7 +146,6 @@ int lastButtonState = LOW;  // the previous reading from the input pin
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
-bool button_held = true;
 bool single_press = true;
 unsigned long blinkMillis = 0;  // will store last time LED was updated
 int blinkState = 0;
@@ -420,8 +419,13 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
     batteryLow = vbatt & 0xff;
     batteryHigh = vbatt >> 8;
   }
-  packet[11] = batteryLow;
-  packet[12] = batteryHigh;
+  if (cmd == 3) {
+    packet[11] = configurationVariables.source[0];
+    packet[12] = configurationVariables.source[1];
+  } else {
+    packet[11] = 0x6f; //batteryLow;
+    packet[12] = 0x11; //batteryHigh;
+  }
 
   _send_packet(packet);
 }
@@ -1073,7 +1077,7 @@ void blueart_parseInput() {
 }
 ///////////////////////core////////////////////////////
 
-void sendbutonpress(int state) {
+void sendbuttonpress(int state) {
   set_radio_mode(SEND);
   if (state) {
     digitalWrite(LED_RED, HIGH);
@@ -1105,7 +1109,7 @@ void probeCycle() {
     if ((currentMillis - lastDebounceTime) > configurationVariables.buttonLongPressLength) {
       Serial.println("pairing");
       probe_mode_c = PAIR;
-      button_held = true;
+      button_state = LOW; // if still pressed when returning from pairing, treat it as a new press
       laserOn = false;  // Turn off laser when button is held
     }
   }
@@ -1118,7 +1122,6 @@ void probeCycle() {
       if ((currentMillis - lastSwitchTime) < configurationVariables.buttonDoublePressTime) {
         laserOn = !laserOn;
         Serial.println("double press");
-        button_held = false;
       } else {
         // First press is detected
         single_press = true;
@@ -1130,7 +1133,7 @@ void probeCycle() {
   button_state = reading;
 
   // Send button press state
-  sendbutonpress(button_state);
+  sendbuttonpress(button_state);
 
   // Laser cycle handling
   if (laserOn) {
