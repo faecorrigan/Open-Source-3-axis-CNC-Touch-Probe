@@ -99,6 +99,8 @@ enum RadioMode { OFF,
 
 ProbeMode probe_mode_c = PROBE;
 
+unsigned long millLaserCommandDuration = 12500; // ms to keep laser on after mill command
+
 struct configurationVariablesStruct {
 
   ////////////////////////////configuration variables///////////////////////////////////////////////
@@ -146,7 +148,8 @@ int lastButtonState = LOW;  // the previous reading from the input pin
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
-bool single_press = true;
+unsigned long lastLaserCommandTime = 0;  // the last time the mill sent a laser on command
+unsigned long lastButtonSendTime = 0;  // the last time the probe sent a button press packet to the mill
 unsigned long blinkMillis = 0;  // will store last time LED was updated
 int blinkState = 0;
 unsigned long buttonLongPressMillis = 0;
@@ -325,7 +328,7 @@ void set_radio_mode(RadioMode radio_mode) {
       setup_radio_TXRX();
       MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channel * 5 - 50;
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_READY) == 0) {}  // wait to complete
+      while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {} // wait to complete
       break;
 
     case RECEIVE:
@@ -333,7 +336,7 @@ void set_radio_mode(RadioMode radio_mode) {
       setup_radio_TXRX();
       MMIO(RADIO_BASE, RADIO_OFFSET_FREQUENCY) = configurationVariables.channelRx * 5 - 50;
       MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
-      while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_READY) == 0) {}  // wait to complete
+      while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) {} // wait to complete
       break;
 
     default: break;
@@ -437,6 +440,12 @@ void _send_packet(uint8_t pkt[127]) {
   }
 
   // ensure state TXIDLE
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) == RADIO_STATE_TX) {
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+  }
+  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) == RADIO_STATE_RX) {
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
+  }
   if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_TXIDLE) {
     MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_TXEN) = 1;
   }
@@ -456,6 +465,39 @@ void send_ack() {
   _send_packet(ack_pkt);
 }
 
+void clear_receive_packet() {
+  for (int i = 0; i < 128; i++) {
+    receivePkt[i] = 0x0;
+  }
+}
+
+// performs necessary actions to put the radio in rx mode and start listening for
+// packets. This process is blocking, but actually waiting for a packet is async
+void receive_async() {
+  // turn on radio, if necessary
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
+    set_radio_mode(RECEIVE);
+  }
+
+  // ensure state RXIDLE or RX
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RX) {
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) {
+      // rx rampup from disabled or tx
+      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
+      while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) { }
+    }
+    // state is now RXIDLE; prepare for and start receive
+
+    // Receive packet
+    clear_receive_packet();
+    MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&receivePkt[0];
+    MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) = 0;
+    MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
+    MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCERROR) = 0;
+
+    MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
+  }
+}
 
 int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
   // turn on radio, if necessary
@@ -476,9 +518,7 @@ int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, 
   while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) { }
 
   // Receive packet
-  for (int i = 0; i < 128; i++) {
-    receivePkt[i] = 0xcc;
-  }
+  clear_receive_packet();
   MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&receivePkt[0];
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) = 0;
   MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
@@ -1078,16 +1118,11 @@ void blueart_parseInput() {
 ///////////////////////core////////////////////////////
 
 void sendbuttonpress(int state) {
-  set_radio_mode(SEND);
   if (state) {
-    digitalWrite(LED_RED, HIGH);
-    digitalWrite(LED_GREEN, LOW);
     Serial.println("button pressed");
     send_packet(0x01);
 
   } else {                          //todo add an option to send button not pressed over 802
-    digitalWrite(LED_RED, LOW);     // turn the LED off by making the voltage HIGH
-    digitalWrite(LED_GREEN, HIGH);  // turn the LED on (LOW is the voltage level)
     if (configurationVariables.send_unpressed_commands) {
       Serial.println("button released");
       send_packet(0x00);
@@ -1111,6 +1146,7 @@ void probeCycle() {
       probe_mode_c = PAIR;
       button_state = LOW; // if still pressed when returning from pairing, treat it as a new press
       laserOn = false;  // Turn off laser when button is held
+      lastLaserCommandTime = 0;
     }
   }
 
@@ -1124,7 +1160,6 @@ void probeCycle() {
         Serial.println("double press");
       } else {
         // First press is detected
-        single_press = true;
         lastSwitchTime = currentMillis;  // Set the time for the first press
       }
     }
@@ -1132,18 +1167,46 @@ void probeCycle() {
 
   button_state = reading;
 
+  digitalWrite(LED_RED, button_state);
+  digitalWrite(LED_GREEN, !button_state);
+
   // Send button press state
-  sendbuttonpress(button_state);
+  if (currentMillis - lastButtonSendTime >= configurationVariables.pollingRate) {
+    sendbuttonpress(button_state);
+    lastButtonSendTime = currentMillis;
+  }
+
+  // TODO send heartbeat if it has been long enough since the last one
+
+  // Check if we have received a mill laser command
+  if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) == 1) {
+    // received a valid radio transmission
+    if (receivePkt[0] == 0xe && receivePkt[4] == 0x22 && receivePkt[5] == 0x20) {
+      // packet has the expected length and correct PAN
+      if (receivePkt[6] == configurationVariables.source[0] && receivePkt[7] == configurationVariables.source[1]) {
+        // packet is addressed to this probe
+        if (receivePkt[10] == 0x02) {
+          // packet is a laser on command
+          lastLaserCommandTime = currentMillis;
+          MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
+          clear_receive_packet();
+        }
+      }
+    }
+  }
+
+  // If not already listening, listen for mill commands
+  receive_async();
 
   // Laser cycle handling
-  if (laserOn) {
+  if (laserOn || (lastLaserCommandTime > 0 && currentMillis <= lastLaserCommandTime + millLaserCommandDuration)) {
     digitalWrite(PIN_LASER01,LOW); //turn on lasers
     digitalWrite(PIN_LASER02,LOW);
 
-    Serial.println("Im a frickin laser. Pew pew");
     if (currentMillis - blinkMillis >= 1000) {
       blinkMillis = currentMillis;
       blinkState = (blinkState == LOW) ? HIGH : LOW;
+      Serial.println("Im a frickin laser. Pew pew");
     }
     if ((currentMillis - lastDebounceTime) > configurationVariables.laserDelay) {
       laserOn = false;
@@ -1156,10 +1219,16 @@ void probeCycle() {
     digitalWrite(LED_BLUE, HIGH);
   }
 
-  delay(configurationVariables.pollingRate);
-
   // Check for idle state
-  testforIdle();
+  unsigned long idleTime = lastDebounceTime;
+  if (lastLaserCommandTime > 0) {
+    idleTime = max(idleTime, lastLaserCommandTime + millLaserCommandDuration);
+  }
+  idleTime += configurationVariables.idleDelay;
+  if (currentMillis > idleTime && button_state == LOW && !laserOn) {
+    Serial.println("going to sleep");
+    probe_mode_c = IDLE;
+  }
 }
 
 void pairCycle() {
@@ -1223,6 +1292,7 @@ void pairCycle() {
   // Reset sequence number; send status packet
   send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);
   Serial.println("Pairing success");
+  lastDebounceTime = millis();
   probe_mode_c = PROBE;
 }
 
@@ -1295,15 +1365,6 @@ void offCycle() {
   //
   // in debuggers, code execution may continue here under emulated system off mode,
   // and will loop
-}
-
-void testforIdle() {
-
-  // shutdown when time reaches sleepingDelay ms
-  if ((currentMillis > configurationVariables.idleDelay + lastDebounceTime) && button_state == LOW && !laserOn) {
-    Serial.println("going to sleep");
-    probe_mode_c = IDLE;
-  }
 }
 
 void idleCycle() {

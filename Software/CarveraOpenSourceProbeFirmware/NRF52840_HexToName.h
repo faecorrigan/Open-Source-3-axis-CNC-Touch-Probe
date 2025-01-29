@@ -226,6 +226,7 @@
 #define RADIO_STATE_RXIDLE   2
 #define RADIO_STATE_RX       3
 #define RADIO_STATE_TXIDLE   10
+#define RADIO_STATE_TX       11
 
 // RTC
 // Real Time Counter (RTC) -- used for sleeping on the slow clock
