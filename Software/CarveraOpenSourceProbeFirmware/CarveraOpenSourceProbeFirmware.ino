@@ -144,7 +144,6 @@ unsigned long currentMillis = 0;
 
 //button setup variables
 int button_state = LOW;     // the current reading from the input pin
-int lastButtonState = LOW;  // the previous reading from the input pin
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
@@ -1171,12 +1170,16 @@ void probeCycle() {
   digitalWrite(LED_GREEN, !button_state);
 
   // Send button press state
-  if (currentMillis - lastButtonSendTime >= configurationVariables.pollingRate) {
+  if (lastButtonSendTime == 0 || currentMillis - lastButtonSendTime >= configurationVariables.pollingRate) {
     sendbuttonpress(button_state);
     lastButtonSendTime = currentMillis;
   }
 
-  // TODO send heartbeat if it has been long enough since the last one
+  // Send heartbeat if it has been long enough since the last one
+  // (or none have been sent since power on)
+  if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
+    sendHeartbeat();
+  }
 
   // Check if we have received a mill laser command
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) == 1) {
@@ -1367,6 +1370,13 @@ void offCycle() {
   // and will loop
 }
 
+// sends a heartbeat and sets up the RTC for the next one
+void sendHeartbeat() {
+  send_packet(0x06);
+  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
+  MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+}
+
 void idleCycle() {
   int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
 
@@ -1394,15 +1404,9 @@ void idleCycle() {
 
     if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
       // send a heartbeat
-      set_radio_mode(SEND);
-      Serial.println("idle heartbeat");
-      send_packet(0x06);
-      disable_radio();
-
-      // set up for next heartbeat
+      sendHeartbeat();
       beatsUntilSleep--;
-      MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
-      MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+      disable_radio();
     } else {
       // sleep until next button event or heartbeat
       MMIO(RTC1_BASE, RTC_OFFSET_TASKS_STOP) = 1;  // Disable RTC1 to prevent Arduino tick functionality
@@ -1412,7 +1416,9 @@ void idleCycle() {
 
       __WFE();  // Wait for event (CPU enters low-power state)
 
-      // Disable RTC0 interrupt after wake-up
+      // Disable RTC0 interrupt after wake-up to prevent it from being handled
+      // (arduino implements the RTC0 handler with a trap, and we need to avoid
+      // getting execution stuck in that trap)
       MMIO(RTC0_BASE, RTC_OFFSET_INTENCLR) = 1 << 16;  // Disable RTC0 interrupt
       NVIC_ClearPendingIRQ(RTC0_IRQn);  // Clear RTC0 interrupt pending flag
       __set_BASEPRI(oldBasepri);  // Restore BASEPRI
@@ -1442,7 +1448,8 @@ void initHeartbeatTimer() {
   // stop and set config variables
   MMIO(RTC0_BASE, RTC_OFFSET_TASKS_STOP) = 1;
   MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
-  MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+  // initialize with the comparator triggered to generate a heartbeat immediately after power on
+  MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 1;
   MMIO(RTC0_BASE, RTC_OFFSET_PRESCALER) = prescale;
   MMIO(RTC0_BASE, RTC_OFFSET_CC0) = scaledTicks;
   MMIO(RTC0_BASE, RTC_OFFSET_EVTEN) = 1 << 16;  // enable compare to CC0, disable others
@@ -1482,9 +1489,11 @@ void setup() {
 
   //initialize digital pin for button as Input
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+  button_state = LOW; // indicates the probe was last noticed untriggered
+  lastButtonSendTime = 0;
 
-  // Attach button interrupt for falling edge (button press)
-  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, FALLING);
+  // Attach button interrupt for rising edge (button press)
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, RISING);
 
 #ifdef SerialDebug
   Serial.begin(115200);
@@ -1499,16 +1508,12 @@ void setup() {
   pinMode(PIN_HICHG, OUTPUT);
   pinMode(PIN_CHG, INPUT);
 
-
   digitalWrite(PIN_VBAT_ENABLE, LOW);  // VBAT read enable
   digitalWrite(PIN_HICHG, LOW);        // charge current 100mA
 
-
-
-
-  // initialise ADC wireing_analog_nRF52.c:73
-  analogReference(AR_DEFAULT);  // default 0.6V*6=3.6V  wireing_analog_nRF52.c:73
-  analogReadResolution(16);     // wireing_analog_nRF52.c:39
+  // initialise ADC wiring_analog_nRF52.c:73
+  analogReference(AR_DEFAULT);  // default 0.6V*6=3.6V  wiring_analog_nRF52.c:73
+  analogReadResolution(16);     // wiring_analog_nRF52.c:39
 
   //read_current_flash_vars();
   initHeartbeatTimer();
