@@ -153,7 +153,6 @@ unsigned long blinkMillis = 0;  // will store last time LED was updated
 int blinkState = 0;
 unsigned long buttonLongPressMillis = 0;
 unsigned long lastSwitchTime = 0;
-unsigned long buttonHeartbeatUnpressedTime = 0;
 unsigned long idleHeartbeatUnpressedTime = 0;
 
 //laser setup variables
@@ -498,7 +497,7 @@ void receive_async() {
   }
 }
 
-int receive_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
+int pairing_wait_for_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
   // turn on radio, if necessary
   if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
     set_radio_mode(RECEIVE);
@@ -1250,13 +1249,7 @@ void pairCycle() {
   if (currentMillis - blinkMillis >= 1000) {
     // save the last time you blinked the LED
     blinkMillis = currentMillis;
-
-    // if the LED is off turn it on and vice-versa:
-    if (blinkState == LOW) {
-      blinkState = HIGH;
-    } else {
-      blinkState = LOW;
-    }
+    blinkState = !blinkState;
 
     digitalWrite(LED_RED, blinkState);
     digitalWrite(LED_BLUE, blinkState);
@@ -1264,22 +1257,19 @@ void pairCycle() {
 
   Serial.println("starting Pairing");
   //send pairing packet 1
-  set_radio_mode(RECEIVE);
-  while (receive_packet() != 2) {
+  while (pairing_wait_for_packet() != 2) {
 
     if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
     {
       Serial.println("Machine never sent first confirm packet");
       return;
     }
-    set_radio_mode(SEND);
     send_packet(0x03);
-    set_radio_mode(RECEIVE);
     currentMillis = millis();
   }
   //Serial.println("first packet confirmed, waiting for packet from machine");
   //wait for response packet
-  while (receive_packet() != 1) {
+  while (pairing_wait_for_packet() != 1) {
 
     currentMillis = millis();
     if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
@@ -1289,7 +1279,6 @@ void pairCycle() {
     }
   }
   Serial.print("received machine packet, sending second confirm");
-  set_radio_mode(SEND);
   send_ack();
 
   // Reset sequence number; send status packet
@@ -1391,7 +1380,6 @@ void idleCycle() {
   while (1) {
     if (digitalRead(PIN_BUTTON) || probe_mode_c == PROBE) {
       lastDebounceTime = millis();
-      set_radio_mode(SEND);
       probe_mode_c = PROBE;
       return;
     }
@@ -1517,10 +1505,12 @@ void setup() {
 
   //read_current_flash_vars();
   initHeartbeatTimer();
-  //filesystem setup
-  set_radio_mode(SEND);
-  buttonHeartbeatUnpressedTime = currentMillis;
 
+  // init radio and hf clock. FWIW I haven't checked this, but I think the primary
+  // purpose of this line is to make the radio power (default on) match the HF clock
+  // (default off), as expected in the rest of the code. This line happens to do that,
+  // as well as (unimportantly) preparing the radio to send
+  set_radio_mode(SEND);
 
 #ifdef ConstantPair
   probe_mode_c = PAIR;
