@@ -373,8 +373,6 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
 
   if (reset_seq) {
     configurationVariables.seq = 0x00;
-  } else {
-    configurationVariables.seq++;
   }
 
   //packet lenght
@@ -384,6 +382,9 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
   packet[2] = 0x88;
   //sequence number
   packet[3] = configurationVariables.seq;
+  if (saveBeforeSleep) {
+    configurationVariables.seq++;
+  }
   //pan
   packet[4] = configurationVariables.pan[0];
   packet[5] = configurationVariables.pan[1];
@@ -522,14 +523,18 @@ int pairing_wait_for_packet() {  //return 0 for no packet, return 1 for a proper
   //ack
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
     if (receivePkt[0] == 0x5) {
-      if (receivePkt[3] == configurationVariables.seq) {
+      uint8_t prevSeq = configurationVariables.seq;
+      if (saveBeforeSleep) {
+        prevSeq--;
+      }
+      if (receivePkt[3] == prevSeq) {
         Serial.println("ack confirmed");
         return 2;
       } else {
         Serial.print("ack for unknown packet: ");
         Serial.print(receivePkt[3]);
         Serial.print(" (expected seq = ");
-        Serial.print(configurationVariables.seq);
+        Serial.print(prevSeq);
         Serial.println(")");
       }
     }
