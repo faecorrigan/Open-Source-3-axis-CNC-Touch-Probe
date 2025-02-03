@@ -101,10 +101,16 @@ ProbeMode probe_mode_c = PROBE;
 
 unsigned long millLaserCommandDuration = 12500; // ms to keep laser on after mill command
 
+// Any time a breaking change is made to how configuration variables are saved into
+// flash, this version should be bumped. Ideally, read_current_flash_vars should also
+// be updated to correctly read both old and new versions correctly
+// To avoid confusion with uninitialized flash, never use version 0xFF. Or, for good measure, version 0
+const uint8_t CONFIG_VERSION = 1;
+
 struct configurationVariablesStruct {
 
   ////////////////////////////configuration variables///////////////////////////////////////////////
-  bool uninitialized = true;
+  uint8_t version = CONFIG_VERSION;
   //button configuration variables
   int pollingRate = 100;                          //ms between tests
   unsigned long debounceDelay = 50;               // the debounce time; increase if the output flickers
@@ -128,6 +134,7 @@ struct configurationVariablesStruct {
   int channel = 25;
   int channelRx = 25;
   bool send_unpressed_commands = false;
+  uint8_t seq = 0;
 };
 configurationVariablesStruct configurationVariables;
 
@@ -136,7 +143,6 @@ configurationVariablesStruct configurationVariables;
 
 //communication setup
 uint8_t receivePkt[128] = {0x00};
-uint8_t seq = 0;
 //pairing wait
 unsigned long previousMillis = 0;  // will store last time LED was updated need to consolodate with primary wait times
 unsigned long currentMillis = 0;
@@ -154,6 +160,7 @@ int blinkState = 0;
 unsigned long buttonLongPressMillis = 0;
 unsigned long lastSwitchTime = 0;
 unsigned long idleHeartbeatUnpressedTime = 0;
+bool saveBeforeSleep = false;
 
 //laser setup variables
 bool laserOn = false;
@@ -163,7 +170,7 @@ int16_t vbatt = 0;
 
 
 //flash storage setup
-volatile uint32_t *flashConfig = (uint32_t *)0xfef00;  //rename to flash page. the second hex digit is the page number
+volatile uint32_t *configFlashPage = (uint32_t *)0xfef00; // note: must point to the start of a flash page (multiple of 0x100)
 
 //bluetooth BLE uarrt setup
 BLEDfu bledfu;    // OTA DFU service
@@ -229,62 +236,40 @@ void report_flash_vars_to_serial()  //for testing.
   for (int cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++)
 
   {
-    Serial.println(*(flashConfig + cnt));
+    Serial.println(*(configFlashPage + cnt));
   }
 }
 
 void write_default_flash_vars() {
 
-  //writeFlash(&flashConfig[0], configurationVariables, true); //todo. Alternatively when testing the probe, put into bluetooth mode and run a save command
+  //writeFlash(&configFlashPage[0], configurationVariables, true); //todo. Alternatively when testing the probe, put into bluetooth mode and run a save command
 }
 
 void write_current_flash_vars() {
-
-  Serial.println("vars at start: ");
+  Serial.println("flash vars at start: ");
   report_flash_vars_to_serial();
 
+  Serial.println("vars being written...");
+  eraseFlashPage(configFlashPage, true);
 
-  eraseFlashPage(flashConfig, true);
+  uint32_t *p = (uint32_t *)&configurationVariables;
 
-  Serial.println("vars being written: ");
-
-  // pointer to array of 16 bit values
-  uint32_t *p;
-  // take address of configurationVariables and assign to the pointer
-  p = (uint32_t *)&configurationVariables;
-
-  // loop thorugh the elements of the struct
-  for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++) {
-
-    // p points to an address of an element in the array; *p gets you the value ofthat address
-    writeFlash((flashConfig + cnt), *(p), true);
-    Serial.println(*(p));
-    p++;
+  // loop thorugh 32-bit words of the struct, rounding up on length to ensure
+  // a partial word at the end is still written
+  int numWords = (sizeof(configurationVariables) + sizeof(uint32_t) - 1) / sizeof(uint32_t);
+  for (int i = 0; i < numWords; i++) {
+    writeFlash(configFlashPage + i, p[i], true);
+    Serial.println(p[i]);
   }
 
   Serial.println("vars at end: ");
-
   report_flash_vars_to_serial();
 }
 
 void read_current_flash_vars() {
-
-  if (*(flashConfig) > 2) {
-    bleuart.print("cannot read from flash");
-    bleuart.print(*(flashConfig), HEX);
-    return;
-  }
-  uint32_t *p;
-  // take address of configurationVariables and assign to the pointer
-  p = (uint32_t *)&configurationVariables;
-
-  // loop thorugh the elements of the struct
-  for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++) {
-
-    // p points to an address of an element in the array; *p gets you the value ofthat address
-    *p = *(flashConfig + cnt);
-    Serial.println(*(p));
-    p++;
+  configurationVariablesStruct *tmp = (configurationVariablesStruct *)configFlashPage;
+  if (tmp->version == CONFIG_VERSION) {
+    configurationVariables = *tmp;
   }
 }
 
@@ -294,7 +279,7 @@ void report_current_flash_vars_bleuart() {
   // loop thorugh the elements of the struct
   for (uint8_t cnt = 0; cnt < sizeof(configurationVariables) / sizeof(int); cnt++) {
 
-    bleuart.print(*(flashConfig + cnt));
+    bleuart.print(*(configFlashPage + cnt));
   }
 }
 
@@ -387,15 +372,18 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
   uint8_t packet[15] = {};
 
   if (reset_seq) {
-    seq = 0x00;
+    configurationVariables.seq = 0x00;
+  } else {
+    configurationVariables.seq++;
   }
+
   //packet lenght
   packet[0] = 14;
   //source addressing mode
   packet[1] = 0x61;
   packet[2] = 0x88;
   //sequence number
-  packet[3] = seq++;
+  packet[3] = configurationVariables.seq;
   //pan
   packet[4] = configurationVariables.pan[0];
   packet[5] = configurationVariables.pan[1];
@@ -534,14 +522,14 @@ int pairing_wait_for_packet() {  //return 0 for no packet, return 1 for a proper
   //ack
   if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
     if (receivePkt[0] == 0x5) {
-      if (receivePkt[3] == seq - 1) {
+      if (receivePkt[3] == configurationVariables.seq) {
         Serial.println("ack confirmed");
         return 2;
       } else {
         Serial.print("ack for unknown packet: ");
         Serial.print(receivePkt[3]);
-        Serial.print(" (next seq = ");
-        Serial.print(seq);
+        Serial.print(" (expected seq = ");
+        Serial.print(configurationVariables.seq);
         Serial.println(")");
       }
     }
@@ -721,7 +709,7 @@ void blueart_get(bool report_all = false) {
 
   if (strcmp(blueart_returnVariable, "uninitialized") == 0 || report_all) {
 
-    bleuart.printf("uninitialized = %d \r\n", configurationVariables.uninitialized);
+    bleuart.printf("uninitialized = %d \r\n", configurationVariables.version != CONFIG_VERSION);
   }
   if (strcmp(blueart_returnVariable, "pollingRate") == 0 || report_all) {
 
@@ -798,8 +786,8 @@ void blueart_set() {
     int v_return = strtol(blueart_returnValue, NULL, 10);
     if (v_return >= 0) {
 
-      configurationVariables.uninitialized = v_return;
-      bleuart.printf("uninitialized = %d \r\n", configurationVariables.uninitialized);
+      configurationVariables.version = v_return;
+      bleuart.printf("uninitialized = %d \r\n", configurationVariables.version != CONFIG_VERSION);
       bleuart.print("when finished setting variables, send a save command");
 
     } else {
@@ -1073,7 +1061,7 @@ void blueart_parseInput() {
     bleuart.print("received command: erase");
 
     blueart_stop();
-    eraseFlashPage(flashConfig, true);
+    eraseFlashPage(configFlashPage, true);
     delay(1000);
 
     //setup_blueart();
@@ -1282,9 +1270,13 @@ void pairCycle() {
   send_ack();
 
   // Reset sequence number; send status packet
-  send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);
+  saveBeforeSleep = true;
   Serial.println("Pairing success");
+  send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);
+
+  // configure state to enter the probe active cycle
   lastDebounceTime = millis();
+  button_state = LOW; // indicates the probe was last noticed untriggered
   probe_mode_c = PROBE;
 }
 
@@ -1367,6 +1359,12 @@ void sendHeartbeat() {
 }
 
 void idleCycle() {
+  if (saveBeforeSleep) {
+    // save configuration variables to flash
+    write_current_flash_vars();
+    saveBeforeSleep = false;
+  }
+
   int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
 
   // turn off all high power peripherals
@@ -1503,7 +1501,7 @@ void setup() {
   analogReference(AR_DEFAULT);  // default 0.6V*6=3.6V  wiring_analog_nRF52.c:73
   analogReadResolution(16);     // wiring_analog_nRF52.c:39
 
-  //read_current_flash_vars();
+  read_current_flash_vars();
   initHeartbeatTimer();
 
   // init radio and hf clock. FWIW I haven't checked this, but I think the primary
