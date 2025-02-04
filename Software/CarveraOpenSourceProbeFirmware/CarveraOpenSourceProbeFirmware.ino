@@ -112,9 +112,9 @@ struct configurationVariablesStruct {
   ////////////////////////////configuration variables///////////////////////////////////////////////
   uint8_t version = CONFIG_VERSION;
   //button configuration variables
-  int pollingRate = 100;                          //ms between tests
+  int pollingRate = 6;                          //ms between tests
   unsigned long debounceDelay = 50;               // the debounce time; increase if the output flickers
-  unsigned long buttonLongPressLength = 10000;    //how long you need to hold the button down before it enters pairing mode
+  unsigned long buttonLongPressLength = 9500;    //how long you need to hold the button down before it enters pairing mode
   unsigned long buttonDoublePressTime = 1000;     //how long between button presses to register a double press
   unsigned long buttonHeartbeatUnpressed = 1000;  //how long between sending button released events in active probe mode
 
@@ -160,7 +160,6 @@ int blinkState = 0;
 unsigned long buttonLongPressMillis = 0;
 unsigned long lastSwitchTime = 0;
 unsigned long idleHeartbeatUnpressedTime = 0;
-bool saveBeforeSleep = false;
 
 //laser setup variables
 bool laserOn = false;
@@ -215,20 +214,16 @@ void eraseFlashPage(volatile uint32_t *addr, bool waitForFinish) {
   }
 }
 
-void writeFlash(volatile uint32_t *addr, uint32_t data, bool waitForFinish) {
-
+void writeFlash(volatile uint32_t *addr, uint32_t data) {
   // block on NVMC readynext
   while (!MMIO(NVMC_BASE, NVMC_READYNEXT)) {}
 
-  // write the word
   MMIO(NVMC_BASE, NVMC_CONFIG) = 1;  //enable flash writing
   *addr = data;
   MMIO(NVMC_BASE, NVMC_CONFIG) = 0;  //disable flash writing
 
-  if (waitForFinish) {
-    // block on NVMC ready
-    while (!MMIO(NVMC_BASE, NVMC_READY)) {}
-  }
+  // block on NVMC ready
+  while (!MMIO(NVMC_BASE, NVMC_READY)) {}
 }
 
 void report_flash_vars_to_serial()  //for testing.
@@ -245,25 +240,35 @@ void write_default_flash_vars() {
   //writeFlash(&configFlashPage[0], configurationVariables, true); //todo. Alternatively when testing the probe, put into bluetooth mode and run a save command
 }
 
-void write_current_flash_vars() {
-  Serial.println("flash vars at start: ");
-  report_flash_vars_to_serial();
-
-  Serial.println("vars being written...");
-  eraseFlashPage(configFlashPage, true);
-
-  uint32_t *p = (uint32_t *)&configurationVariables;
-
-  // loop thorugh 32-bit words of the struct, rounding up on length to ensure
-  // a partial word at the end is still written
-  int numWords = (sizeof(configurationVariables) + sizeof(uint32_t) - 1) / sizeof(uint32_t);
-  for (int i = 0; i < numWords; i++) {
-    writeFlash(configFlashPage + i, p[i], true);
-    Serial.println(p[i]);
+// returns true if any change was made
+// does not rewrite the page if there are no changes to make
+bool write_current_flash_vars() {
+  bool changed = false;
+  for (int i = 0; i < sizeof(configurationVariables) / sizeof(char); i++) {
+    if (((char *)configFlashPage)[i] != ((char *)&configurationVariables)[i]) {
+      changed = true;
+      break;
+    }
   }
 
-  Serial.println("vars at end: ");
-  report_flash_vars_to_serial();
+  if (changed) {
+    Serial.println("flash vars at start: ");
+    report_flash_vars_to_serial();
+
+    Serial.println("vars being written...");
+    eraseFlashPage(configFlashPage, true);
+
+    int count = (sizeof(configurationVariables) + sizeof(uint32_t) - 1)/ sizeof(uint32_t);
+    uint32_t *src = (uint32_t *)&configurationVariables;
+    for (int i=0; i < count; i++) {
+      writeFlash(&configFlashPage[i], src[i]);
+    }
+
+    Serial.println("vars at end: ");
+    report_flash_vars_to_serial();
+  }
+
+  return changed;
 }
 
 void read_current_flash_vars() {
@@ -366,25 +371,20 @@ void setup_radio_TXRX()  // all the one time setup for the 802.15.4 radio
   // MMIO(RADIO_BASE, 0x650) = 0x201; // MODECNF0
 }
 
+// returns true if it got an ack
 uint8_t batteryLow = 0;
 uint8_t batteryHigh = 0;
-void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = false) {
+bool send_packet(uint8_t cmd) {
+  // construct the packet
   uint8_t packet[15] = {};
 
-  if (reset_seq) {
-    configurationVariables.seq = 0x00;
-  }
-
-  //packet lenght
+  //packet length
   packet[0] = 14;
   //source addressing mode
   packet[1] = 0x61;
   packet[2] = 0x88;
   //sequence number
   packet[3] = configurationVariables.seq;
-  if (saveBeforeSleep) {
-    configurationVariables.seq++;
-  }
   //pan
   packet[4] = configurationVariables.pan[0];
   packet[5] = configurationVariables.pan[1];
@@ -403,6 +403,7 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
   //data payload
   packet[10] = cmd;
   //battery status
+  bool read_battery = cmd == 0x06;
   if (read_battery) {
     vbatt = analogRead(PIN_VBAT);  // convert to function later
     vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
@@ -417,7 +418,31 @@ void send_packet(uint8_t cmd = 0x01, bool read_battery = true, bool reset_seq = 
     packet[12] = 0x11; //batteryHigh;
   }
 
+  // actually send the packet
   _send_packet(packet);
+
+  // wait for an ack
+  uint32_t ackStart = micros();
+  uint32_t ackTimeout = 1300; // I clocked one ack at 977us, and added some buffer to that
+  receive_async();
+  while (micros() - ackStart < ackTimeout) {
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) == 1) {
+      if (receivePkt[0] == 0x5) {
+        volatile uint32_t diff = micros() - ackStart;
+        if (receivePkt[3] == configurationVariables.seq) {
+          // got ack -- increment seq and return
+          configurationVariables.seq++;
+          return 1;
+        }
+      }
+    }
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RX) {
+      receive_async();
+    }
+  }
+
+  // timed out with no ack -- return without incrementing seq
+  return 0;
 }
 
 void _send_packet(uint8_t pkt[127]) {
@@ -484,79 +509,6 @@ void receive_async() {
 
     MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
   }
-}
-
-int pairing_wait_for_packet() {  //return 0 for no packet, return 1 for a proper packet, return 2 for ack packet
-  // turn on radio, if necessary
-  if (MMIO(RADIO_BASE, RADIO_OFFSET_POWER) == 0) {
-    set_radio_mode(RECEIVE);
-  }
-
-  // ensure state RXIDLE
-  if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) {
-    if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) == RADIO_STATE_RX) {
-      // cancel the current rx command, return to rxidle
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_STOP) = 1;
-    } else {
-      // rx rampup from disabled or tx
-      MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_RXEN) = 1;
-    }
-  }
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RXIDLE) { }
-
-  // Receive packet
-  clear_receive_packet();
-  MMIO(RADIO_BASE, RADIO_OFFSET_PACKETPTR) = (uint32_t)&receivePkt[0];
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) = 0;
-  MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCERROR) = 0;
-
-  MMIO(RADIO_BASE, RADIO_OFFSET_TASKS_START) = 1;
-  previousMillis = millis();
-  while (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_END) == 0) {  //wait until it receives something
-    currentMillis = millis();
-    if (currentMillis - previousMillis >= configurationVariables.ackInterval) {  //escape loop if taking too long
-      return 0;
-    }
-  }
-
-  //ack
-  if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
-    if (receivePkt[0] == 0x5) {
-      uint8_t prevSeq = configurationVariables.seq;
-      if (saveBeforeSleep) {
-        prevSeq--;
-      }
-      if (receivePkt[3] == prevSeq) {
-        Serial.println("ack confirmed");
-        return 2;
-      } else {
-        Serial.print("ack for unknown packet: ");
-        Serial.print(receivePkt[3]);
-        Serial.print(" (expected seq = ");
-        Serial.print(prevSeq);
-        Serial.println(")");
-      }
-    }
-  }
-
-  //packet
-  if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK)) {  //check for CRC ok?
-    if (receivePkt[0] == 0xe && receivePkt[4] == 0x22 && receivePkt[5] == 0x20) {
-      // length, PAN ok
-      Serial.print(" length pan ok ");
-      //Serial.print(receivePkt[10]);
-      if (receivePkt[10] == 0x03) {
-        Serial.println(" confirm packet ");
-        configurationVariables.source[0] = receivePkt[11];
-        configurationVariables.source[1] = receivePkt[12];
-        configurationVariables.destination[0] = receivePkt[11];
-        configurationVariables.destination[1] = receivePkt[12];
-        return 1;
-      }
-    }
-  }
-  return 0;
 }
 
 ///////////////////////blueart/////////////////////////
@@ -1226,63 +1178,88 @@ void probeCycle() {
   }
 }
 
-void pairCycle() {
+bool pairingShouldExit() {
+  // check if the button is released
+  if(digitalRead(PIN_BUTTON) == LOW) {
+    lastDebounceTime = millis();
+    button_state = LOW; // indicates the probe was last noticed untriggered
+    probe_mode_c = PROBE;
+    return true;
+  }
+  return false;
+}
 
+void pairCycle() {
   unsigned long currentMillis = millis();
   unsigned long pairing_prevMillis = currentMillis;
   int returnValue = 0;
 
-  if (currentMillis - lastDebounceTime > configurationVariables.pairingLength) {
+  delay(1000);
 
-    lastDebounceTime = currentMillis;
+  // blink leds
+  blinkState = !blinkState;
+  digitalWrite(LED_RED, blinkState);
+  digitalWrite(LED_BLUE, blinkState);
+
+  Serial.println("Pairing...");
+
+  //send pairing packet 1 until the machine sends back an ack
+  bool gotAck = false;
+  const int maxRepeat = 10;
+  for (int sentCount = 0; !gotAck && sentCount < maxRepeat; sentCount++) {
+    uint32_t sendTime = micros();
+    gotAck = send_packet(0x03);
+    if (!gotAck && sentCount + 1 < maxRepeat) {
+      // delay before sending next packet
+      while (micros() - sendTime < 1025) { // approximate value, measured
+        if (pairingShouldExit()) {
+          return;
+        }
+      }
+    }
+  }
+  if (!gotAck) {
+    return; // restart pairing process
+  }
+
+  bool pairingSucceeded = false;
+  uint32_t startReceiveTime = millis();
+  receive_async();
+  while (millis() - startReceiveTime < 2000) {
+    // listen for a reply from the mill and send an ack
+    // do not exit early because there is no guarantee the mill hears the ack!!
+    // the mill needs our ack so it also knows pairing succeeded
+
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_EVENTS_CRCOK) == 1) {
+      // got a valid packet -- process it
+      if (receivePkt[0] == 0xe && receivePkt[4] == 0x22 && receivePkt[5] == 0x20 && receivePkt[10] == 0x03) {
+        // length, PAN ok
+        configurationVariables.source[0] = receivePkt[11];
+        configurationVariables.source[1] = receivePkt[12];
+        configurationVariables.destination[0] = receivePkt[11];
+        configurationVariables.destination[1] = receivePkt[12];
+        pairingSucceeded = true;
+        send_ack();
+      }
+    }
+
+    if (MMIO(RADIO_BASE, RADIO_OFFSET_STATE) != RADIO_STATE_RX) {
+      receive_async();
+    }
+  }
+
+  if (pairingSucceeded) {
+    // Reset sequence number, save pairing info, and send a fresh status packet
+    Serial.println("Pairing success");
+    configurationVariables.seq = 0;
+    write_current_flash_vars();
+    sendHeartbeat();
+
+    // configure state to enter the probe active cycle
+    lastDebounceTime = millis();
+    button_state = LOW; // indicates the probe was last noticed untriggered
     probe_mode_c = PROBE;
-    return;
   }
-
-  if (currentMillis - blinkMillis >= 1000) {
-    // save the last time you blinked the LED
-    blinkMillis = currentMillis;
-    blinkState = !blinkState;
-
-    digitalWrite(LED_RED, blinkState);
-    digitalWrite(LED_BLUE, blinkState);
-  }
-
-  Serial.println("starting Pairing");
-  //send pairing packet 1
-  while (pairing_wait_for_packet() != 2) {
-
-    if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
-    {
-      Serial.println("Machine never sent first confirm packet");
-      return;
-    }
-    send_packet(0x03);
-    currentMillis = millis();
-  }
-  //Serial.println("first packet confirmed, waiting for packet from machine");
-  //wait for response packet
-  while (pairing_wait_for_packet() != 1) {
-
-    currentMillis = millis();
-    if ((currentMillis - pairing_prevMillis) > 3000)  //&& (currentMillis - lastDebounceTime) < configurationVariables.pairingDelay)
-    {
-      Serial.println("pairing timout: waiting on machine response");
-      return;
-    }
-  }
-  Serial.print("received machine packet, sending second confirm");
-  send_ack();
-
-  // Reset sequence number; send status packet
-  saveBeforeSleep = true;
-  Serial.println("Pairing success");
-  send_packet(0x06, /*new battery reading*/true, /*reset seq*/true);
-
-  // configure state to enter the probe active cycle
-  lastDebounceTime = millis();
-  button_state = LOW; // indicates the probe was last noticed untriggered
-  probe_mode_c = PROBE;
 }
 
 void laserCycle()  //this does nothing right now. It is here in case we want to implement a standalone laser mode without the probing functions
@@ -1346,6 +1323,9 @@ void offCycle() {
   digitalWrite(PIN_LASER02,HIGH);
   set_radio_mode(OFF);  // turn off radio and HF clock
 
+  // save configuration variables to flash
+  write_current_flash_vars();
+
   sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
 
   // This is unreachable except for operation under debuggers; in normal execution the
@@ -1359,17 +1339,11 @@ void offCycle() {
 // sends a heartbeat and sets up the RTC for the next one
 void sendHeartbeat() {
   send_packet(0x06);
-  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
   MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0) = 0;
+  MMIO(RTC0_BASE, RTC_OFFSET_TASKS_CLEAR) = 1;
 }
 
 void idleCycle() {
-  if (saveBeforeSleep) {
-    // save configuration variables to flash
-    write_current_flash_vars();
-    saveBeforeSleep = false;
-  }
-
   int beatsUntilSleep = max(1, ceil(configurationVariables.sleepingDelay / (float)configurationVariables.idleHeartbeatDelay));
 
   // turn off all high power peripherals
