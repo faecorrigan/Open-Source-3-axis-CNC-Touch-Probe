@@ -124,7 +124,7 @@ struct configurationVariablesStruct {
   unsigned long laserDelay = 15000;         //how long to wait in laser mode before quitting back to probe mode
   unsigned long idleDelay = 20000;           //how long to wait until the probe goes into idle mode
   unsigned long sleepingDelay = 1000 * 60 * 60 * 24 * 3;      //how long until the probe goes into a deep sleep mode
-  unsigned long idleHeartbeatDelay = 1000 * (60 * 5 + 9) + 500;  //how often to send heartbeat probe updates when in idle mode
+  unsigned long idleHeartbeatDelay = 1000 * (60 * 5 + 10);  //how often to send heartbeat probe updates when in idle mode
 
   //communication configuration
   uint8_t pan[2] = { 0x22, 0x20 };
@@ -985,7 +985,7 @@ void blueart_parseInput() {
     delay(1000);
     set_radio_mode(SEND);
     probe_mode_c = PROBE;
-    probeCycle();
+    probeCycle(true);
 
 
   } else if (strcmp(blueart_returnCommand, "get") == 0) {
@@ -1073,7 +1073,7 @@ void sendbuttonpress(int state) {
   }
 }
 
-void probeCycle() {
+void probeCycle(bool firstTime) {
   currentMillis = millis();
   int reading = digitalRead(PIN_BUTTON);
 
@@ -1121,7 +1121,7 @@ void probeCycle() {
 
   // Send heartbeat if it has been long enough since the last one
   // (or none have been sent since power on)
-  if (MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
+  if (firstTime || MMIO(RTC0_BASE, RTC_OFFSET_EVENTS_COMPARE0)) {
     sendHeartbeat();
   }
 
@@ -1498,6 +1498,7 @@ void setup() {
 }
 
 // the loop function runs over and over again forever
+ProbeMode lastProbeMode = SLEEP;
 void loop() {
 
   switch (probe_mode_c) {
@@ -1510,7 +1511,7 @@ void loop() {
 
     case PAIR: pairCycle(); break;
 
-    case PROBE: probeCycle(); break;
+    case PROBE: probeCycle(probe_mode_c != lastProbeMode); break;
 
     case LASER: laserCycle(); break;
 
@@ -1522,4 +1523,6 @@ void loop() {
 
     default: break;
   }
+
+  lastProbeMode = probe_mode_c;
 }
