@@ -122,9 +122,9 @@ struct configurationVariablesStruct {
   unsigned long pairingDelay = 10000;       //how long to wait in pairing mode before quitting back to probe mode
   unsigned long pairingLength = 20000;
   unsigned long laserDelay = 15000;         //how long to wait in laser mode before quitting back to probe mode
-  unsigned long idleDelay = 20000;           //20000;          //how long to wait until the probe goes into idle mode
-  unsigned long sleepingDelay = 10000;      //1000000; //how long until the probe goes into a deep sleep mode
-  unsigned long idleHeartbeatDelay = 5000;  //how often to send heartbeat probe updates when in idle mode
+  unsigned long idleDelay = 20000;           //how long to wait until the probe goes into idle mode
+  unsigned long sleepingDelay = 1000 * 60 * 60 * 24 * 3;      //how long until the probe goes into a deep sleep mode
+  unsigned long idleHeartbeatDelay = 1000 * (60 * 5 + 9) + 500;  //how often to send heartbeat probe updates when in idle mode
 
   //communication configuration
   uint8_t pan[2] = { 0x22, 0x20 };
