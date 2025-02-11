@@ -1191,8 +1191,10 @@ bool pairingShouldExit() {
 
 void pairCycle() {
   unsigned long currentMillis = millis();
-  unsigned long pairing_prevMillis = currentMillis;
-  int returnValue = 0;
+
+  if (pairingShouldExit()) {
+    return;
+  }
 
   delay(1000);
 
