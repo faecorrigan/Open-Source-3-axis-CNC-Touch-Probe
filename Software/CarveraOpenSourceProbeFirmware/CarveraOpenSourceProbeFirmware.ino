@@ -405,7 +405,10 @@ bool send_packet(uint8_t cmd) {
   //battery status
   bool read_battery = cmd == 0x06;
   if (read_battery) {
+    pinMode(PIN_VBAT_ENABLE, OUTPUT);
+    digitalWrite(PIN_VBAT_ENABLE, LOW);  // VBAT read enable
     vbatt = analogRead(PIN_VBAT);  // convert to function later
+    pinMode(PIN_VBAT_ENABLE, INPUT);
     vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
     batteryLow = vbatt & 0xff;
     batteryHigh = vbatt >> 8;
@@ -1455,7 +1458,7 @@ void setup() {
   pinMode(PIN_LASER02, OUTPUT);
 
   //initialize digital pin for button as Input
-  pinMode(PIN_BUTTON, INPUT_PULLUP);
+  pinMode(PIN_BUTTON, INPUT);
   button_state = LOW; // indicates the probe was last noticed untriggered
   lastButtonSendTime = 0;
 
@@ -1471,11 +1474,10 @@ void setup() {
 #endif
   //setup battery
   pinMode(PIN_VBAT, INPUT);
-  pinMode(PIN_VBAT_ENABLE, OUTPUT);
+  pinMode(PIN_VBAT_ENABLE, INPUT); // low power mode when not in use
   pinMode(PIN_HICHG, OUTPUT);
   pinMode(PIN_CHG, INPUT);
 
-  digitalWrite(PIN_VBAT_ENABLE, LOW);  // VBAT read enable
   digitalWrite(PIN_HICHG, LOW);        // charge current 100mA
 
   // initialise ADC wiring_analog_nRF52.c:73
