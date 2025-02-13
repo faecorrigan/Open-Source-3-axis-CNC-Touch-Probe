@@ -123,7 +123,7 @@ struct configurationVariablesStruct {
   unsigned long pairingLength = 20000;
   unsigned long laserDelay = 15000;         //how long to wait in laser mode before quitting back to probe mode
   unsigned long idleDelay = 20000;           //how long to wait until the probe goes into idle mode
-  unsigned long sleepingDelay = 1000 * 60 * 60 * 24 * 3;      //how long until the probe goes into a deep sleep mode
+  unsigned long sleepingDelay = 1000 * 60 * 60 * 24 * 21;      //how long until the probe goes into a deep sleep mode
   unsigned long idleHeartbeatDelay = 1000 * (60 * 5 + 10);  //how often to send heartbeat probe updates when in idle mode
 
   //communication configuration
@@ -405,10 +405,9 @@ bool send_packet(uint8_t cmd) {
   //battery status
   bool read_battery = cmd == 0x06;
   if (read_battery) {
-    pinMode(PIN_VBAT_ENABLE, OUTPUT);
     digitalWrite(PIN_VBAT_ENABLE, LOW);  // VBAT read enable
     vbatt = analogRead(PIN_VBAT);  // convert to function later
-    pinMode(PIN_VBAT_ENABLE, INPUT);
+    digitalWrite(PIN_VBAT_ENABLE, HIGH);  // VBAT read disable, low power mode
     vbatt = BATTERYPOWERCONVERSIONRATIO * vbatt / 4096;  // conversion factor
     batteryLow = vbatt & 0xff;
     batteryHigh = vbatt >> 8;
@@ -1328,16 +1327,18 @@ void offCycle() {
   digitalWrite(PIN_LASER02,HIGH);
   set_radio_mode(OFF);  // turn off radio and HF clock
 
-  // save configuration variables to flash
+  // save configuration variables to flash if they have changed
   write_current_flash_vars();
 
-  sd_power_system_off();  // this function puts the whole nRF52 to deep sleep (no Bluetooth).  If no sense pins are setup (or other hardware interrupts), the nrf52 will not wake up.
+  // This function puts the whole nRF52 to deep sleep (no code execution). If
+  // no sense pins are setup, the nrf52 will not wake up.
+  NRF_POWER->SYSTEMOFF = 1;
 
   // This is unreachable except for operation under debuggers; in normal execution the
   // chip is now in deep sleep, and execution will begin again on wake (gpio button)
   // from the top with a full reset
   //
-  // in debuggers, code execution may continue here under emulated system off mode,
+  // In debuggers, code execution may continue here under emulated system off mode,
   // and will loop
 }
 
@@ -1384,7 +1385,9 @@ void idleCycle() {
       __set_BASEPRI(6 << (8 - __NVIC_PRIO_BITS));  // Set BASEPRI to mask RTC0 interrupt
       MMIO(RTC0_BASE, RTC_OFFSET_INTENSET) = 1 << 16;  // Enable RTC0 interrupt
 
-      __WFE();  // Wait for event (CPU enters low-power state)
+      if (!digitalRead(PIN_BUTTON)) {
+        __WFE();  // Wait for event (CPU enters low-power state)
+      }
 
       // Disable RTC0 interrupt after wake-up to prevent it from being handled
       // (arduino implements the RTC0 handler with a trap, and we need to avoid
@@ -1401,7 +1404,10 @@ void idleCycle() {
 void GPIO_Handler() {
   if (probe_mode_c == SLEEP || probe_mode_c == IDLE) {
     // wake up
-    probe_mode_c = PROBE;
+    if (digitalRead(PIN_BUTTON)) {
+      lastDebounceTime = millis();
+      probe_mode_c = PROBE;
+    }
   }
 }
 
@@ -1450,20 +1456,24 @@ void setup() {
   //Bluefruit.begin();          // Sleep functions need the softdevice to be active.
 
   // initialize digital pin LED_BUILTIN as an output.
-  pinMode(LED_RED, OUTPUT);
-  pinMode(LED_BLUE, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_RED, OUTPUT_S0D1); // Standard 0, Disconnect 1 (important for low power)
+  pinMode(LED_BLUE, OUTPUT_S0D1);
+  pinMode(LED_GREEN, OUTPUT_S0D1);
 
-  pinMode(PIN_LASER01, OUTPUT);
-  pinMode(PIN_LASER02, OUTPUT);
+  pinMode(PIN_LASER01, OUTPUT_S0D1);
+  pinMode(PIN_LASER02, OUTPUT_S0D1);
 
-  //initialize digital pin for button as Input
-  pinMode(PIN_BUTTON, INPUT);
+  // Initialize the button (external pulldown). SENSE_HIGH triggers the GPIO Detect event
+  // In principle we could use the GPIO Port event (triggered by detect) to
+  // wake from sleep, resulting in lower power use than a pin event (used by
+  // attachInterrupt) -- ~3uA vs 20uA. However, I tried this and failed to
+  // achieve low power use. It's probably still possible, but for now we're
+  // using attachInterrupt for wakeup
+  pinMode(PIN_BUTTON, INPUT_SENSE_HIGH);
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, RISING);
   button_state = LOW; // indicates the probe was last noticed untriggered
   lastButtonSendTime = 0;
 
-  // Attach button interrupt for rising edge (button press)
-  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), GPIO_Handler, RISING);
 
 #ifdef SerialDebug
   Serial.begin(115200);
@@ -1474,13 +1484,14 @@ void setup() {
 #endif
   //setup battery
   pinMode(PIN_VBAT, INPUT);
-  pinMode(PIN_VBAT_ENABLE, INPUT); // low power mode when not in use
+  pinMode(PIN_VBAT_ENABLE, OUTPUT_S0D1);
+  digitalWrite(PIN_VBAT_ENABLE, HIGH); // low power mode when not in use
   pinMode(PIN_HICHG, OUTPUT);
   pinMode(PIN_CHG, INPUT);
 
   digitalWrite(PIN_HICHG, LOW);        // charge current 100mA
 
-  // initialise ADC wiring_analog_nRF52.c:73
+  // initialize ADC wiring_analog_nRF52.c:73
   analogReference(AR_DEFAULT);  // default 0.6V*6=3.6V  wiring_analog_nRF52.c:73
   analogReadResolution(16);     // wiring_analog_nRF52.c:39
 
