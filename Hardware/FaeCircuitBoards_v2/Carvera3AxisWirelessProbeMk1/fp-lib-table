@@ -1,4 +1,0 @@
-(fp_lib_table
-  (version 7)
-  (lib (name "nrf52840-breakout-mdbt50q")(type "KiCad")(uri "$(KIPRJMOD)/Carvera3AxisWirelessProbeMk1.pretty")(options "")(descr ""))
-)

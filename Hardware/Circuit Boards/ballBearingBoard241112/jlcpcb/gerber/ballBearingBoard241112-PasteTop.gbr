@@ -1,0 +1,88 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,7.0.10*%
+%TF.CreationDate,2024-11-13T08:35:09-08:00*%
+%TF.ProjectId,ballBearingBoard241112,62616c6c-4265-4617-9269-6e67426f6172,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,Paste,Top*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 7.0.10) date 2024-11-13 08:35:09*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 Aperture macros list*
+%AMRoundRect*
+0 Rectangle with rounded corners*
+0 $1 Rounding radius*
+0 $2 $3 $4 $5 $6 $7 $8 $9 X,Y pos of 4 corners*
+0 Add a 4 corners polygon primitive as box body*
+4,1,4,$2,$3,$4,$5,$6,$7,$8,$9,$2,$3,0*
+0 Add four circle primitives for the rounded corners*
+1,1,$1+$1,$2,$3*
+1,1,$1+$1,$4,$5*
+1,1,$1+$1,$6,$7*
+1,1,$1+$1,$8,$9*
+0 Add four rect primitives between the rounded corners*
+20,1,$1+$1,$2,$3,$4,$5,0*
+20,1,$1+$1,$4,$5,$6,$7,0*
+20,1,$1+$1,$6,$7,$8,$9,0*
+20,1,$1+$1,$8,$9,$2,$3,0*%
+%AMRotRect*
+0 Rectangle, with rotation*
+0 The origin of the aperture is its center*
+0 $1 length*
+0 $2 width*
+0 $3 Rotation angle, in degrees counterclockwise*
+0 Add horizontal line*
+21,1,$1,$2,0,0,$3*%
+G04 Aperture macros list end*
+%ADD10RotRect,0.508000X0.863600X233.000000*%
+%ADD11RotRect,0.889000X0.863600X233.000000*%
+%ADD12RoundRect,0.030000X-0.120000X-0.370000X0.120000X-0.370000X0.120000X0.370000X-0.120000X0.370000X0*%
+%ADD13RoundRect,0.040000X-0.160000X-0.360000X0.160000X-0.360000X0.160000X0.360000X-0.160000X0.360000X0*%
+%ADD14RotRect,0.584200X1.320800X70.000000*%
+%ADD15RoundRect,0.140000X0.170000X-0.140000X0.170000X0.140000X-0.170000X0.140000X-0.170000X-0.140000X0*%
+%ADD16RoundRect,0.140000X-0.189700X-0.111865X0.073414X-0.207631X0.189700X0.111865X-0.073414X0.207631X0*%
+G04 APERTURE END LIST*
+D10*
+%TO.C,U1*%
+X-3652472Y-7379551D03*
+X-4795921Y-8896960D03*
+X-6710729Y-7454048D03*
+D11*
+X-5681926Y-6088780D03*
+%TD*%
+D12*
+%TO.C,FPC1*%
+X1326200Y-11411700D03*
+X826200Y-11411700D03*
+X326200Y-11411700D03*
+X-173800Y-11411700D03*
+X-673800Y-11411700D03*
+X-1173800Y-11411700D03*
+D13*
+X2326200Y-8901700D03*
+X-2173800Y-8901700D03*
+%TD*%
+D14*
+%TO.C,U2*%
+X-8412592Y2087199D03*
+X-7762753Y3872616D03*
+X-9997128Y3674892D03*
+%TD*%
+D15*
+%TO.C,C1*%
+X-3073400Y-10690800D03*
+X-3073400Y-9730800D03*
+%TD*%
+D16*
+%TO.C,C3*%
+X-9899852Y-64430D03*
+X-8997748Y-392770D03*
+%TD*%
+%TO.C,C2*%
+X-9544252Y951570D03*
+X-8642148Y623230D03*
+%TD*%
+M02*
